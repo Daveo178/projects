@@ -1,0 +1,32 @@
+{
+  "useGlobalConfig": false,
+  "ollamaBaseUrl": "http://127.0.0.1:11434",
+
+  "models": [
+    {
+      "title": "Qwen2.5 Coder 14B",
+      "provider": "ollama",
+      "model": "qwen2.5-coder:14b",
+      "max_tokens": 4096,
+      "temperature": 0.15,
+      "context_length": 16384
+    }
+  ],
+
+  "responseTokens": 4096,
+
+  "tabAutocompleteModel": {
+    "title": "Qwen2.5 Coder 14B",
+    "provider": "ollama",
+    "model": "qwen2.5-coder:14b"
+  },
+
+  "contextLength": 16000,
+  "readProjectContext": true,
+
+  "retrieval": {
+    "enabled": true,
+    "maxFiles": 20,
+    "maxTokens": 8000
+  }
+}
