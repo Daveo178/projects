@@ -1,0 +1,75 @@
+{
+  "person1": {
+    "name": "Dave",
+    "age": 55,
+    "retirement_age": 60,
+    "state_pension_age": 67,
+    "dc_pot": 290000,
+    "monthly_contrib": 0,
+    "monthly_contrib_pct": 0.225,
+    "income_until_retirement": 55300,
+    "income_growth_rate": 0.025,
+    "db_income": 0,
+    "draw_age": 60,
+    "pcls_percent": 0,
+    "dc_growth_rate": 0.05,
+    "db_growth_rate": 0.025,
+    "state_pension_growth_rate": 0.025
+  },
+  "person2": {
+    "name": "Shaz",
+    "age": 55,
+    "retirement_age": 60,
+    "state_pension_age": 67,
+    "dc_pot": 0,
+    "monthly_contrib": 0,
+    "monthly_contrib_pct": 0.15,
+    "income_until_retirement": 0,
+    "income_growth_rate": 0.025,
+    "db_income": 0,
+    "draw_age": 60,
+    "pcls_percent": 0,
+    "dc_growth_rate": 0.05,
+    "db_growth_rate": 0.025,
+    "state_pension_growth_rate": 0.025
+  },
+  "assets": [
+    {
+      "name": "ISA",
+      "value": 0,
+      "growth_rate": 0.05,
+      "contribution_until_retirement": 0,
+      "asset_type": "ISA"
+    },
+    {
+      "name": "GIA",
+      "value": 0,
+      "growth_rate": 0.05,
+      "contribution_until_retirement": 0,
+      "asset_type": "GIA"
+    },
+    {
+      "name": "Cash",
+      "value": 0,
+      "growth_rate": 0.0,
+      "contribution_until_retirement": 0,
+      "asset_type": "Cash"
+    },
+    {
+      "name": "Property",
+      "value": 0,
+      "growth_rate": 0.02,
+      "asset_type": "Property"
+    }
+  ],
+  "mortgage": {
+    "outstanding": 0,
+    "rate": 0.03,
+    "end_year": 10,
+    "annual_payment": 0,
+    "annual_overpayment": 0
+  },
+  "spending": 35000,
+  "drawdown_strategy": "Inflation-adjusted",
+  "events": []
+}

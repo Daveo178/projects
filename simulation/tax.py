@@ -44,3 +44,38 @@ def uk_income_tax(earned_income, taxable_drawdown=0):
         "net": net,
         "effective_rate": tax / total_taxable_income if total_taxable_income > 0 else 0,
     }
+
+
+def uk_national_insurance(earned_income):
+    """
+    UK employees' Class 1 National Insurance (2024/25 thresholds).
+
+    Applies to EARNED income only — salary. Pension income (Defined
+    Benefit, State Pension, UFPLS drawdowns) is NOT subject to NI,
+    which is why the engine passes `_indexed_earned_income(person, y)`
+    here rather than `p1_gross` (which mixes salary with pension).
+
+    Tiered rates:
+      - Below primary threshold (£12,570): 0% (employee pays nothing)
+      - Between PT and UEL: 8% on the band (main rate)
+      - Above UEL (£50,270): 2% on the remainder (upper rate)
+
+    There is no upper NI cap — high earners pay 2% on every additional £.
+    Note: these are 2024/25 EMPLOYEE rates only. Employers' NI (13.8%
+    above £9,100) is NOT modelled because the household is the employee,
+    not the employer. Class 4 self-employed NI is also out of scope.
+
+    Single-taxpayer semantics: this function takes one person's earned
+    income. The engine sums p1_ni + p2_ni for household-level figures,
+    mirroring the per-spouse pattern used by `uk_income_tax`.
+    """
+    PT = 12_570   # Primary threshold
+    UEL = 50_270  # Upper earnings limit
+
+    if earned_income <= PT:
+        return 0.0
+    if earned_income <= UEL:
+        return (earned_income - PT) * 0.08
+    # Above UEL: cumulative of the main band (capped) plus upper rate on
+    # the rest. No ceiling above UEL — high earners pay 2% on every £.
+    return (UEL - PT) * 0.08 + (earned_income - UEL) * 0.02

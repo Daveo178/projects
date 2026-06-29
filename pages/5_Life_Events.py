@@ -1,18 +1,21 @@
 import streamlit as st
 
+from storage import init_household, save_household
+
 st.title("📅 Life Events")
 
 # ----------------------------------------
-# 1. Initialise session_state only once
+# 1. Initialise session_state — seed from disk on first visit
 # ----------------------------------------
-if "household_data" not in st.session_state:
-    st.session_state.household_data = {}
+init_household(st.session_state)
 
 # Ensure events list exists
 if "events" not in st.session_state.household_data:
     st.session_state.household_data["events"] = []
 
+
 events = st.session_state.household_data["events"]
+
 
 # ----------------------------------------
 # 2. Inputs (pre-filled with last used values)
@@ -48,6 +51,7 @@ if st.button("Add Event"):
         "description": event_desc
     })
 
+    save_household(st.session_state.household_data)
     st.success("Event added!")
 
 # ----------------------------------------
@@ -71,4 +75,5 @@ else:
 
     if st.button("Delete Event"):
         removed = events.pop(delete_index - 1)
+        save_household(st.session_state.household_data)
         st.warning(f"Deleted event: {removed['description']}")

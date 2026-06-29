@@ -8,19 +8,32 @@ from models.household import Household
 from models.events import LifeEvent
 from simulation.engine import run_simulation
 # from simulation.monte_carlo import monte_carlo_simulation   # Optional upgrade
-from simulation.charts import net_worth_chart
+from simulation.charts import net_worth_chart, to_int_pounds
+from storage import init_household
 
 st.title("🔀 Scenario Comparison")
 st.write("Compare two retirement scenarios side-by-side.")
 
 # ---------------------------------------------------------
-# 1. Ensure household data exists
+# 1. Ensure household data exists — load from disk on first visit
 # ---------------------------------------------------------
-if "household_data" not in st.session_state or not st.session_state.household_data:
+init_household(st.session_state)
+
+if not st.session_state.household_data:
     st.warning("Please enter your pension, assets, spending and events first.")
     st.stop()
 
 data = st.session_state.household_data
+
+# ---------------------------------------------------------
+# Age axis (consistent with pages 10/11/12): `Year` is a year-offset
+# from simulation start; `Age = Year + p1_current_age`. Same fallback
+# pattern — default 55 if `data["person1"]["age"]` is missing.
+# ---------------------------------------------------------
+try:
+    p1_current_age = int(data["person1"]["age"])
+except (KeyError, TypeError, ValueError):
+    p1_current_age = 55
 
 # ---------------------------------------------------------
 # 2. Scenario A Inputs (persistent)
@@ -161,11 +174,28 @@ if st.button("Run Comparison"):
         how="outer"
     ).sort_values("Year").fillna(method="ffill")
 
+    # Defensive re-round: today both scenarios share the same years so the
+    # outer-merge + ffill never produces NaN and the int dtype from
+    # `net_worth_chart` flows through untouched. But as soon as someone
+    # adds "different end-year per scenario", `ffill` would silently
+    # upcast int -> float64 and reintroduce the rounding slip we just
+    # fixed. `to_int_pounds` is NaN-safe (preserves NaN), so re-applying
+    # it post-merge keeps the whole-pound invariant across the merge
+    # boundary regardless of horizon parity.
+    combined["Scenario A"] = to_int_pounds(combined["Scenario A"].tolist())
+    combined["Scenario B"] = to_int_pounds(combined["Scenario B"].tolist())
+
+    # Convert Year-offset axis to absolute Age for chart consistency,
+    # then drop the now-redundant `Year` column so the displayed
+    # dataframe is a clean 3-column set (Age + Scenario A + Scenario B).
+    combined["Age"] = combined["Year"] + p1_current_age
+    combined = combined.drop(columns=["Year"])
+
     # ---------------------------------------------------------
     # 6. Display Chart
     # ---------------------------------------------------------
     st.subheader("📊 Net Worth Comparison")
-    st.line_chart(combined, x="Year", y=["Scenario A", "Scenario B"])
+    st.line_chart(combined, x="Age", y=["Scenario A", "Scenario B"])
 
     # ---------------------------------------------------------
     # 7. Optional: Monte Carlo success probability

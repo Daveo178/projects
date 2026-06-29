@@ -10,6 +10,8 @@ from models.events import LifeEvent, DownsizingEvent
 
 from simulation.engine import run_simulation
 from simulation.monte_carlo import monte_carlo_simulation
+from simulation.charts import to_int_pounds
+from storage import init_household
 
 st.title("🧪 What‑If Engine")
 
@@ -23,16 +25,26 @@ Experiment with different retirement scenarios:
 """)
 
 # -------------------------
-# Ensure data exists
+# Ensure data exists — seeded from disk if present
 # -------------------------
-if "household_data" not in st.session_state:
+init_household(st.session_state)
+
+if not st.session_state.household_data:
     st.warning("Please enter your pension, assets, spending and events first.")
     st.stop()
 
 data = st.session_state.household_data
 
+# Age axis (consistent with pages 10/11/12): `Year` is a year-offset
+# from simulation start; `Age = Year + p1_current_age`. Same fallback
+# pattern — default 55 if `data["person1"]["age"]` is missing.
+try:
+    p1_current_age = int(data["person1"]["age"])
+except (KeyError, TypeError, ValueError):
+    p1_current_age = 55
+
 required_keys = ["person1", "person2", "assets", "spending"]
-missing = [k for k in required_keys if k not in data]
+missing = [k for k in required_keys if k not in data] 
 
 if missing:
     st.warning(f"Missing required data: {', '.join(missing)}. Please complete the input pages.")
@@ -137,15 +149,15 @@ if st.button("Run What‑If Scenario"):
     # -------------------------
     st.subheader("📈 Deterministic Net Worth")
     df_det = pd.DataFrame({
-        "Year": det["years"],
-        "Net Worth": det["net_worth"],
-        "Income": det["income"],
-        "Spending": det["spending"],
+        "Age": [y + p1_current_age for y in det["years"]],
+        "Net Worth": to_int_pounds(det["net_worth"]),
+        "Income": to_int_pounds(det["income"]),
+        "Spending": to_int_pounds(det["spending"]),
     })
-    st.line_chart(df_det, x="Year", y="Net Worth")
+    st.line_chart(df_det, x="Age", y="Net Worth")
 
     st.subheader("💰 Income vs Spending")
-    st.line_chart(df_det, x="Year", y=["Income", "Spending"])
+    st.line_chart(df_det, x="Age", y=["Income", "Spending"])
 
     # -------------------------
     # Monte Carlo
@@ -155,11 +167,11 @@ if st.button("Run What‑If Scenario"):
 
     st.subheader("📊 Monte Carlo Percentile Bands")
     df_mc = pd.DataFrame({
-        "Year": list(range(len(mc["percentiles"]["p50"]))),
-        "10th": mc["percentiles"]["p10"],
-        "25th": mc["percentiles"]["p25"],
-        "50th": mc["percentiles"]["p50"],
-        "75th": mc["percentiles"]["p75"],
-        "90th": mc["percentiles"]["p90"],
+        "Age": [y + p1_current_age for y in range(len(mc["percentiles"]["p50"]))],
+        "10th": to_int_pounds(mc["percentiles"]["p10"]),
+        "25th": to_int_pounds(mc["percentiles"]["p25"]),
+        "50th": to_int_pounds(mc["percentiles"]["p50"]),
+        "75th": to_int_pounds(mc["percentiles"]["p75"]),
+        "90th": to_int_pounds(mc["percentiles"]["p90"]),
     })
-    st.line_chart(df_mc, x="Year", y=["10th", "25th", "50th", "75th", "90th"])
+    st.line_chart(df_mc, x="Age", y=["10th", "25th", "50th", "75th", "90th"])

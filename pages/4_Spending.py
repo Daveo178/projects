@@ -1,12 +1,13 @@
 import streamlit as st
 
+from storage import init_household, save_household
+
 st.title("💷 Spending & Drawdown")
 
 # ----------------------------------------
-# 1. Initialise session_state only once
+# 1. Initialise session_state — seed from disk on first visit
 # ----------------------------------------
-if "household_data" not in st.session_state:
-    st.session_state.household_data = {}
+init_household(st.session_state)
 
 # Convenience shortcuts
 saved_spending = st.session_state.household_data.get("spending", 30_000)
@@ -35,4 +36,5 @@ if st.button("Save Spending"):
     st.session_state.household_data["spending"] = spending
     st.session_state.household_data["drawdown_strategy"] = strategy
 
+    save_household(st.session_state.household_data)
     st.success("Spending & drawdown strategy saved!")

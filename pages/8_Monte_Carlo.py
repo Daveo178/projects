@@ -9,6 +9,8 @@ from models.household import Household
 from models.events import LifeEvent
 
 from simulation.monte_carlo import monte_carlo_simulation
+from simulation.charts import to_int_pounds
+from storage import init_household
 
 st.title("🎲 Monte Carlo Simulation")
 
@@ -26,9 +28,11 @@ The result is a **probability of success** and a **fan chart** showing the range
 """)
 
 # -------------------------
-# Ensure data exists
+# Ensure data exists — seeded from disk if present
 # -------------------------
-if "household_data" not in st.session_state:
+init_household(st.session_state)
+
+if not st.session_state.household_data:
     st.warning("Please enter your pension, assets, spending and events first.")
     st.stop()
 
@@ -71,6 +75,16 @@ def build_household(data):
 household = build_household(data)
 
 # -------------------------
+# Age axis (consistent with pages 10/11/12): `Year` is a year-offset
+# from simulation start; `Age = Year + p1_current_age`. Same fallback
+# pattern — default 55 if `data["person1"]["age"]` is missing.
+# -------------------------
+try:
+    p1_current_age = int(data["person1"]["age"])
+except (KeyError, TypeError, ValueError):
+    p1_current_age = 55
+
+# -------------------------
 # Run Monte Carlo
 # -------------------------
 runs = st.number_input("Number of Monte Carlo runs", 100, 5000, 1000, key="mc_runs")
@@ -95,17 +109,17 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
     years = list(range(len(mc["percentiles"]["p50"])))
 
     df = pd.DataFrame({
-        "Year": years,
-        "10th Percentile": mc["percentiles"]["p10"],
-        "25th Percentile": mc["percentiles"]["p25"],
-        "Median (50th)": mc["percentiles"]["p50"],
-        "75th Percentile": mc["percentiles"]["p75"],
-        "90th Percentile": mc["percentiles"]["p90"],
+        "Age": [y + p1_current_age for y in years],
+        "10th Percentile": to_int_pounds(mc["percentiles"]["p10"]),
+        "25th Percentile": to_int_pounds(mc["percentiles"]["p25"]),
+        "Median (50th)": to_int_pounds(mc["percentiles"]["p50"]),
+        "75th Percentile": to_int_pounds(mc["percentiles"]["p75"]),
+        "90th Percentile": to_int_pounds(mc["percentiles"]["p90"]),
     })
 
     st.line_chart(
         df,
-        x="Year",
+        x="Age",
         y=[
             "10th Percentile",
             "25th Percentile",
@@ -118,15 +132,18 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
     # -------------------------
     # Failure year histogram
     # -------------------------
-    st.subheader("💥 Failure Year Distribution")
+    st.subheader("💥 Failure Age Distribution")
 
-    failure_years = [fy for fy in mc["failure_years"] if fy is not None]
+    # `failure_years` is a list of year-OFFSETS (per `monte_carlo.py`: the
+    # `enumerate(results["net_worth"])` index, not an absolute year).
+    # Convert absolutes for chart consistency with the rest of the app.
+    failure_ages = [fy + p1_current_age for fy in mc["failure_years"] if fy is not None]
 
-    if len(failure_years) == 0:
+    if len(failure_ages) == 0:
         st.success("No failures in any simulation run.")
     else:
-        hist_df = pd.DataFrame({"Failure Year": failure_years})
-        st.bar_chart(hist_df["Failure Year"].value_counts().sort_index())
+        hist_df = pd.DataFrame({"Failure Age": failure_ages})
+        st.bar_chart(hist_df["Failure Age"].value_counts().sort_index())
 
     # -------------------------
     # Worst-case and best-case paths
@@ -138,14 +155,14 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
     best_path = all_paths.max(axis=0)
 
     df_paths = pd.DataFrame({
-        "Year": years,
-        "Worst Case": worst_path,
-        "Best Case": best_path,
-        "Median": mc["percentiles"]["p50"]
+        "Age": [y + p1_current_age for y in years],
+        "Worst Case": to_int_pounds(worst_path),
+        "Best Case": to_int_pounds(best_path),
+        "Median": to_int_pounds(mc["percentiles"]["p50"]),
     })
 
     st.line_chart(
         df_paths,
-        x="Year",
+        x="Age",
         y=["Worst Case", "Median", "Best Case"]
     )

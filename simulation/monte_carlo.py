@@ -1,42 +1,26 @@
 import numpy as np
 from copy import deepcopy
 from .engine import run_simulation
-from .longevity import sample_longevity
 
 # -----------------------------
 # Monte Carlo configuration
 # -----------------------------
 
-# Simple 60/40-style glide path for DC (SIPP)
-DC_GLIDE_YEARS = 20  # years before retirement over which we de-risk
+# Standard deviation used around the user's pension growth-rate inputs when
+# the MC samples per-run values. DC gets the most dispersion (markets are
+# vol); DB and State Pension indexation are tied to inflation / triple-lock
+# policy and have far less dispersion.
+DC_RATE_MC_STD = 0.05
+DB_RATE_MC_STD = 0.01
+SP_RATE_MC_STD = 0.01
+INCOME_RATE_MC_STD = 0.01  # Wage inflation volatility — same magnitude as DB / SP indexation.
 
-def dc_glidepath_return(person, year_index):
-    """
-    Generate a DC return for this year using a glide path:
-    - Higher equity exposure far from retirement
-    - More bond-like near and after retirement
-    """
-    current_age = person.age + year_index
-    retirement_age = person.retirement_age
-
-    years_to_ret = retirement_age - current_age
-    years_to_ret = max(0, years_to_ret)
-
-    # 1 = far from retirement (more equity), 0 = at/after retirement (more bonds)
-    weight_equity = min(DC_GLIDE_YEARS, years_to_ret) / DC_GLIDE_YEARS
-
-    # Equity-like parameters
-    equity_mean = 0.07
-    equity_std = 0.15
-
-    # Bond-like parameters
-    bond_mean = 0.02
-    bond_std = 0.05
-
-    mean = weight_equity * equity_mean + (1 - weight_equity) * bond_mean
-    std = weight_equity * equity_std + (1 - weight_equity) * bond_std
-
-    return np.random.normal(mean, std)
+# Floor applied to the sampled DC growth rate per MC run. With std=0.05
+# around a default user mean of 0.05, ~16% of runs would otherwise sample
+# a non-positive DC rate and over a 30–45-year horizon the DC pot would
+# collapse. Capping single-year drawdown at -30% bounds the worst case
+# while keeping realistic equity-crash scenarios in the distribution tail.
+DC_RATE_FLOOR = -0.30
 
 DEFAULT_RUNS = 1000
 
@@ -70,7 +54,6 @@ def randomised_growth_rates():
 def monte_carlo_simulation(household, runs=DEFAULT_RUNS, years=45):
     all_paths = []
     failure_years = []
-    lifetimes = []
 
     for _ in range(runs):
         h = deepcopy(household)
@@ -81,8 +64,47 @@ def monte_carlo_simulation(household, runs=DEFAULT_RUNS, years=45):
         h.person2.pcls_taken = 0.0
         h.person2.pcls_available = 0.0
 
-        run_years = sample_longevity(base_years=years, std_years=5)
-        lifetimes.append(run_years)
+        # Sample pension growth rates PER RUN around the user's mean input.
+        # Per-person rates can diverge (different scheme rules) so we sample
+        # each partner separately, but the spread is small for DB / State
+        # Pension (inflation-linked) and larger for DC (market vol). DC is
+        # floored at `DC_RATE_FLOOR` to avoid runaway compounding of negative
+        # samples over a 30–45-year horizon (see DC_RATE_FLOOR comment).
+        h.person1.dc_growth_rate = max(
+            DC_RATE_FLOOR,
+            np.random.normal(h.person1.dc_growth_rate, DC_RATE_MC_STD),
+        )
+        h.person2.dc_growth_rate = max(
+            DC_RATE_FLOOR,
+            np.random.normal(h.person2.dc_growth_rate, DC_RATE_MC_STD),
+        )
+        h.person1.db_growth_rate = np.random.normal(
+            h.person1.db_growth_rate, DB_RATE_MC_STD
+        )
+        h.person2.db_growth_rate = np.random.normal(
+            h.person2.db_growth_rate, DB_RATE_MC_STD
+        )
+        h.person1.state_pension_growth_rate = np.random.normal(
+            h.person1.state_pension_growth_rate, SP_RATE_MC_STD
+        )
+        h.person2.state_pension_growth_rate = np.random.normal(
+            h.person2.state_pension_growth_rate, SP_RATE_MC_STD
+        )
+        # Wage-inflation indexed earned income — sampled per-partner with the
+        # same dispersion as DB / SP (both are inflation-policy linked).
+        h.person1.income_growth_rate = np.random.normal(
+            h.person1.income_growth_rate, INCOME_RATE_MC_STD
+        )
+        h.person2.income_growth_rate = np.random.normal(
+            h.person2.income_growth_rate, INCOME_RATE_MC_STD
+        )
+
+        # Honour the caller-provided `years` for every run so each path
+        # is the same length — the fan chart, percentile bands and
+        # best/worst-case paths all share an axis on that assumption.
+        # Varied horizons would crash `np.array(all_paths)` with
+        # "inhomogeneous shape after 1 dimensions" (1k-run reproduction).
+        run_years = years
 
         inflation_path = np.random.normal(INFLATION_MEAN, INFLATION_STD, run_years)
         spending_shocks = np.random.normal(1.0, SPENDING_SHOCK_STD, run_years)
@@ -91,12 +113,7 @@ def monte_carlo_simulation(household, runs=DEFAULT_RUNS, years=45):
         for year in range(run_years):
             for asset in h.assets:
                 asset.growth_rate = growth_paths[year][asset.asset_type]
-        
-        # 2. Apply randomised growth to DC pots (THIS is the new code)
-        dc_growth = dc_glidepath_return(h.person1, year)
-        h.person1.dc_pot *= (1 + dc_growth)
-        h.person2.dc_pot *= (1 + dc_growth)
-        
+
         base_spending = h.spending_target
         h.spending_target_path = [
             base_spending * (1 + inflation_path[y]) * spending_shocks[y]
@@ -129,6 +146,5 @@ def monte_carlo_simulation(household, runs=DEFAULT_RUNS, years=45):
         "percentiles": percentiles,
         "success_rate": success_rate,
         "failure_years": failure_years,
-        "lifetimes": lifetimes,
-        "all_paths": all_paths.tolist()
+        "all_paths": all_paths.tolist(),
     }

@@ -1,19 +1,22 @@
 import requests
-import json
 
-def ask_llm(prompt, model="llama3:8b"):
-    """
-    Sends a prompt to the local Ollama server and returns the model's response.
-    """
-    try:
-        response = requests.post(
-            "http://localhost:11434/api/generate",
-            json={"model": model, "prompt": prompt, "stream": False},
-            timeout=60
-        )
-        response.raise_for_status()
-        data = response.json()
-        return data.get("response", "").strip()
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL = "qwen2.5:7b"
 
-    except Exception as e:
-        return f"[Error contacting local LLM: {e}]"
+
+def ask_llm(prompt: str) -> str:
+    """
+    Send a prompt to the local Ollama LLM and return the response text.
+    """
+    resp = requests.post(
+        OLLAMA_URL,
+        json={
+            "model": MODEL,
+            "prompt": prompt,
+            "stream": False,
+        },
+        timeout=60,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("response", "").strip()
