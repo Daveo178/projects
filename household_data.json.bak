@@ -21,12 +21,12 @@
     "age": 55,
     "retirement_age": 60,
     "state_pension_age": 67,
-    "dc_pot": 0,
+    "dc_pot": 30000,
     "monthly_contrib": 0,
-    "monthly_contrib_pct": 0.15,
+    "monthly_contrib_pct": 0.1,
     "income_until_retirement": 0,
     "income_growth_rate": 0.025,
-    "db_income": 0,
+    "db_income": 9500,
     "draw_age": 60,
     "pcls_percent": 0,
     "dc_growth_rate": 0.05,
@@ -36,9 +36,9 @@
   "assets": [
     {
       "name": "ISA",
-      "value": 0,
+      "value": 8000,
       "growth_rate": 0.05,
-      "contribution_until_retirement": 0,
+      "contribution_until_retirement": 1000,
       "asset_type": "ISA"
     },
     {
@@ -57,17 +57,17 @@
     },
     {
       "name": "Property",
-      "value": 0,
+      "value": 500000,
       "growth_rate": 0.02,
       "asset_type": "Property"
     }
   ],
   "mortgage": {
-    "outstanding": 0,
-    "rate": 0.03,
-    "end_year": 10,
-    "annual_payment": 0,
-    "annual_overpayment": 0
+    "outstanding": 112000,
+    "rate": 0.0458,
+    "end_year": 9,
+    "annual_payment": 15800,
+    "annual_overpayment": 2400
   },
   "spending": 35000,
   "drawdown_strategy": "Inflation-adjusted",

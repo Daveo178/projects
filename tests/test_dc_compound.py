@@ -389,5 +389,175 @@ class TestEngineDcEndToEnd(unittest.TestCase):
                 self.assertAlmostEqual(r["dc_pot"][y], combined, places=4)
 
 
+class TestDcMonthlyCompoundPartialYear(unittest.TestCase):
+    """
+    Lock down `_dc_monthly_compound`'s partial-year scaling contract.
+
+    When `_dc_monthly_compound(pot, r, M, fraction=f)` is called with
+    `f < 1.0`, the helper must scale BOTH the growth AND the contributions
+    to `round(12 * f)` months rather than the full twelve — so an
+    edge-case partial-year-of-contributions caller pays interest for the
+    right fraction of a year (the very bit that motivates this PR). The
+    closed-form reference for `n = round(12 * f)` months is:
+
+        pot_end = pot_start * (1 + r/12) ** n
+                + M * ((1 + r/12) ** n - 1) / (r/12)        (r ≠ 0)
+        pot_end = pot_start + n * M                          (r == 0)
+
+    Mirrors the partial-year scaling that was rolled into mortgage
+    amortisation in step 4 (where a 9y6m mortgage ends mid-year-9).
+
+    Engine-level BC is NOT covered by this class — the engine caller in
+    step 2a/2b passes three positional args and relies on the implicit
+    default `fraction=1.0`, so it does not exercise the partial-year
+    branch. The e2e BC guarantee for `run_simulation` output lives in
+    `TestEngineDcEndToEnd` above (e.g. `test_ten_year_pct_path_matches_
+    closed_form`), which measures the full engine dc_pot series against
+    the 12-month closed form with `places=4`. Any unintended drift in
+    the default-fraction path would be caught there.
+    """
+
+    @staticmethod
+    def _closed_form_n(pot_start, r, M, n_months):
+        """Annuity-due closed form for `n_months` months, with r==0 limit."""
+        if r == 0:
+            return pot_start + n_months * M
+        r_m = r / 12
+        return pot_start * (1 + r_m) ** n_months + M * ((1 + r_m) ** n_months - 1) / r_m
+
+    def test_default_fraction_is_one_year_twelve_months(self):
+        # BC regression guard. Engine caller relies on the implicit default.
+        # Default must equal explicit fraction=1.0 EXACTLY (bit-identical),
+        # not just numerically approximate — post-PR the loop is
+        # `range(round(12 * 1.0))` which equals `range(12)` and runs the
+        # same per-step ops on the same operands in the same order as
+        # pre-PR, so the floats should match exactly. Using `assertEqual`
+        # catches ANY accidental reordering inside the helper that
+        # `assertAlmostEqual(places=6)` would let slip past. Three
+        # fixtures covering distinct parameter shapes (different rate,
+        # different M, different starting pot) so a reordering bug that
+        # numerically happens to cancel for one triple but not others
+        # is still caught.
+        for pot, M, r in [
+            (10_000.0, 500.0, 0.05),
+            (50_000.0,    0.0, 0.10),  # no contribution, higher rate
+            (1_000.0,  250.0, 0.03),   # different shape
+        ]:
+            with self.subTest(pot=pot, M=M, r=r):
+                self.assertEqual(
+                    _dc_monthly_compound(pot, r, M),  # implicit default
+                    _dc_monthly_compound(pot, r, M, fraction=1.0),
+                )
+
+    def test_zero_fraction_returns_input_unchanged(self):
+        # fraction<=0 short-circuits before the loop so callers can skip
+        # the year's step entirely. The pot must come back UNCHANGED
+        # (no growth, no contribution landed, no NaN, no crash).
+        self.assertEqual(
+            _dc_monthly_compound(987.654, 0.05, 500.0, fraction=0.0),
+            987.654,
+        )
+        self.assertEqual(
+            _dc_monthly_compound(0.0, 0.05, 0.0, fraction=0.0),
+            0.0,
+        )
+        # Negative fraction: also short-circuits, also unchanged.
+        self.assertEqual(
+            _dc_monthly_compound(500.0, 0.05, 100.0, fraction=-0.5),
+            500.0,
+        )
+
+    def test_half_year_fraction_compounds_six_months(self):
+        # The headline use case: contributing only the first half of the
+        # year. fraction=0.5 → 6 closed-form months.
+        pot, M, r = 10_000.0, 500.0, 0.05
+        actual = _dc_monthly_compound(pot, r, M, fraction=0.5)
+        expected = self._closed_form_n(pot, r, M, n_months=6)
+        self.assertAlmostEqual(actual, expected, places=6)
+        # Sanity: half-year pot must be STRICTLY less than the full-year
+        # pot (growth has had only six months to compound) and STRICTLY
+        # greater than just adding six months of contribution with no
+        # growth (the opening balance earns six months of interest).
+        full_year = _dc_monthly_compound(pot, r, M, fraction=1.0)
+        six_months_no_growth = pot + 6 * M
+        self.assertLess(actual, full_year)
+        self.assertGreater(actual, six_months_no_growth)
+
+    def test_quarter_year_fraction_compounds_three_months(self):
+        # Three months of growth + three months of contributions. The
+        # closed-form handles both terms (compound + annuity) independently.
+        M, r = 500.0, 0.05
+        actual = _dc_monthly_compound(0.0, r, M, fraction=0.25)
+        expected = self._closed_form_n(0.0, r, M, n_months=3)
+        self.assertAlmostEqual(actual, expected, places=6)
+
+    def test_partial_year_zero_rate_no_div_by_zero(self):
+        # Critical regression guard, scaled to partial years: the closed-
+        # form term `((1+r/12)**n - 1)/(r/12)` is 0/0 at r=0. The
+        # iteration helper must avoid it via `pot = pot + M` each step,
+        # so `pot_end == pot_start + n_months * M` for every fraction.
+        pot, M = 10_000.0, 500.0
+        for fraction, n_months in [
+            (0.25, 3), (0.5, 6), (0.75, 9), (1.0, 12),
+        ]:
+            with self.subTest(fraction=fraction):
+                actual = _dc_monthly_compound(pot, 0.0, M, fraction=fraction)
+                self.assertAlmostEqual(actual, pot + n_months * M, places=6)
+
+    def test_partial_year_zero_contribution_is_partial_compound_only(self):
+        # M=0 + partial fraction → pure compound interest for `n_months`
+        # months, no annuity accumulation term. The closed-form collapses
+        # cleanly: `pot_start * (1 + r/12)**n_months`.
+        pot, r = 10_000.0, 0.05
+        for fraction, n_months in [(0.25, 3), (0.5, 6), (0.75, 9)]:
+            with self.subTest(fraction=fraction):
+                actual = _dc_monthly_compound(pot, r, 0.0, fraction=fraction)
+                expected = pot * (1 + r / 12) ** n_months
+                self.assertAlmostEqual(actual, expected, places=6)
+
+    def test_sweep_matches_closed_form_across_realistic_fractions(self):
+        # Convenience sweep: a future caller could plausibly pass any of
+        # these fractions (half-month, quarter-year, half-year, custom
+        # 0.5833, three-quarter, two-thirds-ish, full-year). All must
+        # match the closed-form for their `round(12*f)` month slice.
+        # Precision bumped to `places=6` (matches the rest of this class)
+        # since FP drift over 12 months is well below 1e-9.
+        pot, M, r = 10_000.0, 500.0, 0.05
+        for fraction in [1/12, 0.25, 0.5, 0.5833, 0.75, 0.9167, 1.0]:
+            with self.subTest(fraction=fraction):
+                actual = _dc_monthly_compound(pot, r, M, fraction=fraction)
+                n_months = round(12 * fraction)
+                expected = self._closed_form_n(pot, r, M, n_months=n_months)
+                self.assertAlmostEqual(actual, expected, places=6)
+
+    def test_partial_year_negative_rate_no_crash(self):
+        # Regression guard on the negative-rate path, scaled to half-year.
+        # Drawdown-year scenarios or future Monte-Carlo tail-year samples
+        # could pass r<0 here; the helper must not raise.
+        pot, M = 1_000.0, 100.0
+        actual = _dc_monthly_compound(pot, -0.02, M, fraction=0.5)
+        expected = self._closed_form_n(pot, -0.02, M, n_months=6)
+        self.assertIsInstance(actual, float)
+        self.assertGreater(actual, 0.0)
+        self.assertAlmostEqual(actual, expected, places=6)
+
+    def test_partial_year_pot_grows_monotonically_with_fraction(self):
+        # Defensive sanity: for fixed (pot, r, M>0), increasing the
+        # fraction from 0 → 1 strictly grows the result. Catches a
+        # regression where someone accidentally transposes growth vs
+        # contribution scaling in the partial-year branch.
+        pot, M, r = 10_000.0, 500.0, 0.05
+        results = [
+            _dc_monthly_compound(pot, r, M, fraction=f)
+            for f in [0.0, 0.0833, 0.25, 0.5, 0.75, 1.0]
+        ]
+        for prev, nxt in zip(results, results[1:]):
+            self.assertLess(
+                prev, nxt,
+                msg=f"Partial-year pot must grow monotonically: "
+                    f"{prev:.4f} >= {nxt:.4f}",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

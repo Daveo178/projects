@@ -90,6 +90,19 @@ df_age = _add_age_column(df)
 # because the indexed pension creep is hard to read when squeezed against the
 # much larger Income series on a shared y-axis).
 # -------------------------
+# Honour the "Include mortgage payment in displayed spending" toggle from
+# the Assets page. When True the Spending line on this chart shows the
+# combined figure (lifestyle + mortgage); when False today's three-line
+# view (Income / Spending / Mortgage Payment) is preserved. The engine
+# itself is unchanged — both columns are already summed in drawdown's
+# total_need — so the toggle is purely a presentation concern on this
+# and the home page chart.
+include_mortgage_in_spending = (
+    st.session_state.household_data
+    .get("mortgage", {})
+    .get("include_in_spending", False)
+)
+
 st.subheader(
     f"💰 Income, Spending & Mortgage Payment ({age_range})"
 )
@@ -109,16 +122,40 @@ income_clamped = (
 df_income_chart = df_age.copy()
 df_income_chart["Income"] = income_clamped
 
-st.line_chart(
-    df_income_chart,
-    x="Age",
-    y=["Income", "Spending", "Mortgage Payment"],
-)
+if include_mortgage_in_spending:
+    # Combine the two columns into a single "Spending" series for the
+    # toggle-ON view, then drop the separate "Mortgage Payment" column
+    # so the line chart only sees what it should plot. Element-wise
+    # pandas Series sum is already int64+int64 → int64, so no extra
+    # `.astype(int)` is needed (it would be a no-op).
+    combined_spending = (
+        pd.Series(to_int_pounds(results["spending"]))
+        + pd.Series(to_int_pounds(mortgage_payment))
+    )
+    df_income_chart = df_income_chart.drop(
+        columns=["Spending", "Mortgage Payment"]
+    )
+    df_income_chart["Spending"] = combined_spending
+    series_to_plot = ["Income", "Spending"]
+    caption_extra = (
+        "Spending includes the annual mortgage payment "
+        "(lifestyle + mortgage, combined). "
+    )
+else:
+    # The default 3-line frame is already constructed by the
+    # df_age frame above; just point at the columns we want.
+    df_income_chart["Spending"] = to_int_pounds(results["spending"])
+    df_income_chart["Mortgage Payment"] = to_int_pounds(mortgage_payment)
+    series_to_plot = ["Income", "Spending", "Mortgage Payment"]
+    caption_extra = ""
+
+st.line_chart(df_income_chart, x="Age", y=series_to_plot)
 st.caption(
-    "Income is the household's annual take-home (post income-tax, "
-    "post NI, post pension-income). It is floored at £0 so the line "
-    "never dips below zero — the stacked bar below shows where each "
-    "year's spend actually came from."
+    caption_extra
+    + "Income is the household's annual take-home "
+    "(post income-tax, post NI, post pension-income). It is floored "
+    "at £0 so the line never dips below zero — the stacked bar below "
+    "shows where each year's spend actually came from."
 )
 
 # -------------------------

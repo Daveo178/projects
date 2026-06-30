@@ -50,17 +50,23 @@ a_spending = st.number_input(
 
 a_ret_age_p1 = st.number_input(
     "Scenario A: Dave retirement age",
-    50,
-    80,
-    st.session_state.get("a_ret_age_p1", data["person1"]["retirement_age"]),
+    min_value=0.0,
+    max_value=80.0,
+    # step=0.5 + float value so users can compare e.g. "retire at 60.5"
+    # vs "retire at 60" without the form snapping back to integers.
+    # Cast to float so a legacy int saved value still seeds without a
+    # type error.
+    value=float(st.session_state.get("a_ret_age_p1", data["person1"]["retirement_age"])),
+    step=0.5,
     key="a_ret_age_p1"
 )
 
 a_ret_age_p2 = st.number_input(
     "Scenario A: Shaz retirement age",
-    50,
-    80,
-    st.session_state.get("a_ret_age_p2", data["person2"]["retirement_age"]),
+    min_value=0.0,
+    max_value=80.0,
+    value=float(st.session_state.get("a_ret_age_p2", data["person2"]["retirement_age"])),
+    step=0.5,
     key="a_ret_age_p2"
 )
 
@@ -88,17 +94,19 @@ b_spending = st.number_input(
 
 b_ret_age_p1 = st.number_input(
     "Scenario B: Dave retirement age",
-    50,
-    80,
-    st.session_state.get("b_ret_age_p1", data["person1"]["retirement_age"]),
+    min_value=0.0,
+    max_value=80.0,
+    value=float(st.session_state.get("b_ret_age_p1", data["person1"]["retirement_age"])),
+    step=0.5,
     key="b_ret_age_p1"
 )
 
 b_ret_age_p2 = st.number_input(
     "Scenario B: Shaz retirement age",
-    50,
-    80,
-    st.session_state.get("b_ret_age_p2", data["person2"]["retirement_age"]),
+    min_value=0.0,
+    max_value=80.0,
+    value=float(st.session_state.get("b_ret_age_p2", data["person2"]["retirement_age"])),
+    step=0.5,
     key="b_ret_age_p2"
 )
 
@@ -172,7 +180,7 @@ if st.button("Run Comparison"):
         dfB[["Year", "Scenario B"]],
         on="Year",
         how="outer"
-    ).sort_values("Year").fillna(method="ffill")
+    ).sort_values("Year").ffill()
 
     # Defensive re-round: today both scenarios share the same years so the
     # outer-merge + ffill never produces NaN and the int dtype from

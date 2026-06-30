@@ -1,6 +1,10 @@
 import streamlit as st
 
 from simulation.aa import aa_status, effective_aa, project_annual_contribution
+from simulation.years_and_months import (
+    _split_years_into_years_and_months,
+    _format_years_months_caption,
+)
 from storage import init_household, save_household
 
 st.title("💼 Pensions")
@@ -89,8 +93,45 @@ p2_pct_default = _migrate_contrib_pct(p2)
 # ----------------------------------------
 st.header("Dave")
 
+# ---- Retirement-age form ----------------------------------------------
+# Dave's retirement-age control. The shared Years+Months helpers from
+# `simulation.years_and_months` (also used by the Mortgage form on
+# pages/3_Assets.py) split the saved float + render the friendly
+# English caption. Verb "retires" + empty noun so the caption reads
+# "Retires in 60 years and 6 months." rather than the
+# boilerplate-noun "Person retires in..."
 d_age = st.number_input("Age", 18, 100, p1.get("age", 55), key="d_age")
-d_ret = st.number_input("Retirement age", 50, 80, p1.get("retirement_age", 60), key="d_ret")
+
+d_ret_default_years, d_ret_default_months = _split_years_into_years_and_months(
+    p1.get("retirement_age", 60)
+)
+col_d_ret_years, col_d_ret_months = st.columns(2)
+with col_d_ret_years:
+    d_ret_years = st.number_input(
+        "Retirement age (years)",
+        min_value=0,
+        max_value=80,
+        value=d_ret_default_years,
+        key="d_ret_years",
+    )
+with col_d_ret_months:
+    d_ret_months = st.number_input(
+        "Retirement age (months)",
+        min_value=0,
+        max_value=11,
+        value=d_ret_default_months,
+        key="d_ret_months",
+        help="Additional months beyond the years field. For example '6' here with '60' in Years gives a retirement age of 60.5. The engine only contributes to the DC pot for the fractional slice of the closing year.",
+    )
+st.caption(
+    _format_years_months_caption(
+        verb="retires",
+        noun="",
+        years=d_ret_years, months=d_ret_months,
+        empty_message="Already retired today (no remaining working period).",
+    )
+)
+
 d_sp = st.number_input("State Pension age", 60, 80, p1.get("state_pension_age", 67), key="d_sp")
 d_dc = st.number_input("DC pot (£)", 0, 5_000_000, p1.get("dc_pot", 0), key="d_dc")
 d_contrib_pct = st.slider(
@@ -159,7 +200,37 @@ d_sp_growth = st.slider(
 st.header("Shaz")
 
 s_age = st.number_input("Age ", 18, 100, p2.get("age", 55), key="s_age")
-s_ret = st.number_input("Retirement age ", 50, 80, p2.get("retirement_age", 60), key="s_ret")
+
+s_ret_default_years, s_ret_default_months = _split_years_into_years_and_months(
+    p2.get("retirement_age", 60)
+)
+col_s_ret_years, col_s_ret_months = st.columns(2)
+with col_s_ret_years:
+    s_ret_years = st.number_input(
+        "Retirement age (years) ",
+        min_value=0,
+        max_value=80,
+        value=s_ret_default_years,
+        key="s_ret_years",
+    )
+with col_s_ret_months:
+    s_ret_months = st.number_input(
+        "Retirement age (months) ",
+        min_value=0,
+        max_value=11,
+        value=s_ret_default_months,
+        key="s_ret_months",
+        help="Additional months beyond the years field. For example '6' here with '60' in Years gives a retirement age of 60.5. The engine only contributes to the DC pot for the fractional slice of the closing year.",
+    )
+st.caption(
+    _format_years_months_caption(
+        verb="retires",
+        noun="",
+        years=s_ret_years, months=s_ret_months,
+        empty_message="Already retired today (no remaining working period).",
+    )
+)
+
 s_sp = st.number_input("State Pension age ", 60, 80, p2.get("state_pension_age", 67), key="s_sp")
 s_dc = st.number_input("DC pot (£) ", 0, 5_000_000, p2.get("dc_pot", 0), key="s_dc")
 s_contrib_pct = st.slider(
@@ -229,7 +300,14 @@ if st.button("Save Pension Data"):
     st.session_state.household_data["person1"] = {
         "name": "Dave",
         "age": d_age,
-        "retirement_age": d_ret,
+        # Persist as a single float so the engine sees one canonical
+        # `retirement_age` value regardless of whether the user entered
+        # an integer years + 0 months or a partial-year combination
+        # (e.g. `60 years 6 months` → `60.5`). The explicit `float(...)`
+        # cast guarantees the JSON value is serialised as a number even
+        # when years and months are decimal literals. The two-field
+        # form mirrors the Mortgage Years+Months input on pages/3_Assets.py.
+        "retirement_age": float(d_ret_years) + d_ret_months / 12.0,
         "state_pension_age": d_sp,
         "dc_pot": d_dc,
         "monthly_contrib": d_contrib_flat,  # legacy £ field — engine reads it only when monthly_contrib_pct is 0
@@ -247,7 +325,8 @@ if st.button("Save Pension Data"):
     st.session_state.household_data["person2"] = {
         "name": "Shaz",
         "age": s_age,
-        "retirement_age": s_ret,
+        # Same Years+Months → float conversion as Person 1 (Dave) above.
+        "retirement_age": float(s_ret_years) + s_ret_months / 12.0,
         "state_pension_age": s_sp,
         "dc_pot": s_dc,
         "monthly_contrib": s_contrib_flat,  # legacy £ field — engine reads it only when monthly_contrib_pct is 0

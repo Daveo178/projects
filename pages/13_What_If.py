@@ -108,11 +108,30 @@ st.subheader("Adjust Scenario")
 col1, col2 = st.columns(2)
 
 with col1:
-    ret_age_p1 = st.slider("Dave retirement age", 50, 75, data["person1"]["retirement_age"])
+    # `number_input` (NOT slider) with `step=0.5` so users can run a
+    # What-If scenario with a partial-year retirement age — e.g. "What
+    # if Dave retires at 59.5 instead of 60?" The slider widget is
+    # int-only out of the box and can't discretise at half-year steps
+    # elegantly. Mirrors the Pension page's Years+Months input shape —
+    # just expressed as a single number + half-year step here because
+    # the What-If page is a quick A/B tool, not a full planner form.
+    ret_age_p1 = st.number_input(
+        "Dave retirement age",
+        min_value=0.0,
+        max_value=80.0,
+        value=float(data["person1"]["retirement_age"]),
+        step=0.5,
+    )
     contrib_p1 = st.number_input("Dave monthly contribution (£)", 0, 5000, data["person1"]["monthly_contrib"])
 
 with col2:
-    ret_age_p2 = st.slider("Shaz retirement age", 50, 75, data["person2"]["retirement_age"])
+    ret_age_p2 = st.number_input(
+        "Shaz retirement age",
+        min_value=0.0,
+        max_value=80.0,
+        value=float(data["person2"]["retirement_age"]),
+        step=0.5,
+    )
     contrib_p2 = st.number_input("Shaz monthly contribution (£)", 0, 5000, data["person2"]["monthly_contrib"])
 
 spending = st.number_input("Annual spending target (£)", 5000, 200000, data["spending"])

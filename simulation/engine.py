@@ -2,28 +2,65 @@ from .state_pension import state_pension_income
 from .drawdown import drawdown_from_assets
 
 
-def _dc_monthly_compound(pot, dc_rate, monthly_contrib):
+def _dc_monthly_compound(pot, dc_rate, monthly_contrib, fraction: float = 1.0):
     """
-    One simulated year of DC pot growth, compounded MONTHLY with a MONTHLY
-    contribution added at the end of each month. Twelve iterations of:
+    Compound `pot` for `12 * fraction` months, with `monthly_contrib` added
+    at the END of each compounded month (annuity-due convention).
+
+    For `fraction == 1.0` (default) this is the standard full-year cadence
+    of TWELVE monthly iterations:
 
         pot = pot * (1 + dc_rate / 12) + monthly_contrib
 
-    This is the standard savings-account cadence (annuity-due: contributions
-    added AFTER the growth step, so the first contribution earns growth in
-    months 2..12, the eleventh earns growth only in month 12, the twelfth
-    earns none).
+    repeated 12 times. Contributions added AFTER the growth step earn
+    growth in months 2..12 — so the first contribution earns growth in 11
+    of the 12 months, the eleventh earns growth only in month 12, the
+    twelfth earns none.
 
-    The closed-form equivalent for any year is:
+    For `fraction < 1.0` (partial-year-of-contributions edge case), the
+    iteration count scales to `round(12 * fraction)` months — so a
+    partner contributing only the first half of the year (fraction=0.5)
+    pays growth for SIX monthly iterations rather than the full twelve,
+    and only the first six monthly contributions land in the pot. This
+    mirrors the partial-year scaling applied to mortgage amortisation in
+    step 4 (where a 9y6m mortgage ends mid-year-9 instead of paying a
+    full extra year of interest and payment).
 
-        pot_end = pot_start * (1 + r/12) ** 12
-                + M * ((1 + r/12) ** 12 - 1) / (r/12)         (r ≠ 0)
-        pot_end = pot_start + 12 * M                          (r == 0)
+    The closed-form equivalent for any number of months `n` is:
+
+        pot_end = pot_start * (1 + r/12) ** n
+                + M * ((1 + r/12) ** n - 1) / (r/12)         (r ≠ 0)
+        pot_end = pot_start + n * M                          (r == 0)
+
+    Edge cases:
+      - `fraction <= 0`      → returns `pot` unchanged. Used by callers
+        that want to skip the year's step entirely (e.g., a future
+        "skip-this-year" override).
+      - `r == 0`             → closed-form `(1+r/12)**n - 1)/(r/12)` is
+        0/0; iteration helper naturally avoids it (each step is
+        `pot = pot + M`).
+      - small fractions      → effectively below ~1/24 (= 0.0416...,
+        meaning any sub-month worth of contributions) round to zero
+        months, so the helper returns `pot` unchanged for those.
+        Python's `round` uses banker's rounding (`round(0.5) == 0`)
+        in general — though at the exact 1/24 boundary the result
+        is also 0 because `12*(1/24)` falls (very slightly) under
+        0.5 in FP, triggering plain rounding-down rather than
+        banker's. Either way: 0 months. Documented behaviour:
+        sub-month contributions pay no growth. Future callers
+        should not pass fractions this small unless they explicitly
+        mean "no growth".
+      - `fraction > 1.0`     → mathematically extrapolates (more than
+        a year of growth in one call). Not expected from any caller
+        but the loop handles it cleanly.
 
     Lifted to module level so test code can import it directly.
     """
+    if fraction <= 0:
+        return pot
     monthly_rate = dc_rate / 12
-    for _ in range(12):
+    n_months = round(12 * fraction)
+    for _ in range(n_months):
         pot = pot * (1 + monthly_rate) + monthly_contrib
     return pot
 
@@ -252,25 +289,80 @@ def run_simulation(household, years=45):
         # 2a/2b. DC pot — MONTHLY compounding of growth plus MONTHLY
         #    contributions within each simulated year. Helpers live at module
         #    level (`_dc_monthly_compound`, `_monthly_dc_contrib`) so unit
-        #    tests can import them directly. Behaviour here is unchanged from
-        #    when the helpers were defined in-loop; this comment block is
-        #    kept as a behavioural anchor for future readers.
-        #    Contributions stop after retirement (no £ going in once the
-        #    partner has stopped working); the pot keeps compounding during
-        #    retirement / drawdown — it's an investment.
+        #    tests can import them directly.
+        #
+        #    Partial-year-of-contributions wiring: `retirement_offset =
+        #    retirement_age - age` is the partner's years-to-retirement.
+        #    When it has a fractional component (e.g. retirement_age=60.5,
+        #    age=55, offset=5.5), only the fractional slice of the closing
+        #    simulation year (`floor(retirement_offset)`) actually carries
+        #    contributions / growth. The engine computes
+        #    `fraction = min(1.0, retirement_offset - year)` for every PRE-
+        #    retirement year and passes it as the 4th arg to
+        #    `_dc_monthly_compound`. The helper then iterates the partial
+        #    slice (`round(12 * fraction)` months) instead of the full 12.
+        #    After retirement (`year >= retirement_offset`), contributions
+        #    stop (M=0) but the pot KEEPS compounding for the full 12
+        #    months at `fraction=1.0` — preserving the existing post-
+        #    retirement behaviour. This conditional avoids handing the
+        #    helper a negative fraction, which would otherwise trigger its
+        #    `if fraction <= 0: return pot` short-circuit and silently
+        #    cancel post-retirement growth.
+        #
+        #    BC guarantee: when `retirement_age` is an integer (legacy saved
+        #    JSON), `retirement_offset` is an integer, and
+        #    `min(1.0, retirement_offset - year)` evaluates to 1.0 for
+        #    every pre-retirement year — so the helper still runs the same
+        #    12 iterations with the same per-step ops on the same operands
+        #    in the same order as pre-PR. Byte-identical output for all
+        #    existing scenarios (locked down by
+        #    `TestEngineDcEndToEnd.test_ten_year_pct_path_matches_closed_form`
+        #    in tests/test_dc_compound.py).
+        #
+        #    Mirrors the partial-year scaling applied to mortgage
+        #    amortisation in step 4. The Mortgage partial-year slices
+        #    `end_year` into (years, months); this Retirement partial-year
+        #    slice mirrors the same conceptual "what fraction of this
+        #    year remains" pattern.
         # -------------------------
         p1_M = _monthly_dc_contrib(household.person1, p1_earned_this_year)
         p2_M = _monthly_dc_contrib(household.person2, p2_earned_this_year)
 
+        p1_retirement_offset = (
+            household.person1.retirement_age - household.person1.age
+        )
+        p2_retirement_offset = (
+            household.person2.retirement_age - household.person2.age
+        )
+
+        if year < p1_retirement_offset:
+            p1_fraction = min(1.0, p1_retirement_offset - year)
+            p1_M_for_year = p1_M
+        else:
+            # Post-retirement: no contributions, full 12 months of
+            # compound growth so the pot still appreciates during the
+            # drawdown horizon. Same shape as the pre-PR post-retirement
+            # path.
+            p1_fraction = 1.0
+            p1_M_for_year = 0.0
+        if year < p2_retirement_offset:
+            p2_fraction = min(1.0, p2_retirement_offset - year)
+            p2_M_for_year = p2_M
+        else:
+            p2_fraction = 1.0
+            p2_M_for_year = 0.0
+
         household.person1.dc_pot = _dc_monthly_compound(
             household.person1.dc_pot,
             household.person1.dc_growth_rate,
-            p1_M if not household.person1.is_retired(year) else 0.0,
+            p1_M_for_year,
+            fraction=p1_fraction,
         )
         household.person2.dc_pot = _dc_monthly_compound(
             household.person2.dc_pot,
             household.person2.dc_growth_rate,
-            p2_M if not household.person2.is_retired(year) else 0.0,
+            p2_M_for_year,
+            fraction=p2_fraction,
         )
 
         # -------------------------
@@ -301,11 +393,28 @@ def run_simulation(household, years=45):
         #    when the debt is cleared mid-year) — it is folded into the
         #    household's total outflow requirement below so drawdown covers
         #    the mortgage as well as living expenses.
+        #
+        #    Partial-year scaling: `Mortgage.end_year` is a float, so a
+        #    9y6m mortgage has end_year=9.5. In the closing simulation
+        #    year (year=9), only half a year of interest accrues and half
+        #    a year of payment is due. `fraction = min(1.0, end_year -
+        #    year)` collapses this to <1.0 for the closing year and
+        #    stays 1.0 for every interior year. Sub-fraction scaling is
+        #    applied to BOTH the interest accrual (via
+        #    `apply_interest(fraction)`) and the planned payment so the
+        #    loan actually closes mid-year-9 instead of finishing a
+        #    full extra year of interest and payment. Years where the
+        #    mortgage isn't `is_active` (year >= end_year) skip the
+        #    whole block via `is_active`'s `year < end_year` gate.
         # -------------------------
         mortgage_paid = 0.0
         if household.mortgage and household.mortgage.is_active(year):
-            household.mortgage.apply_interest()
-            planned = household.mortgage.annual_payment + household.mortgage.annual_overpayment
+            fraction = min(1.0, household.mortgage.end_year - year)
+            household.mortgage.apply_interest(fraction)
+            planned = (
+                household.mortgage.annual_payment
+                + household.mortgage.annual_overpayment
+            ) * fraction
             mortgage_paid = min(planned, household.mortgage.outstanding)
             household.mortgage.outstanding -= mortgage_paid
 
