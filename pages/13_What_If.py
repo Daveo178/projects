@@ -117,6 +117,24 @@ def build_household(overrides):
 # -------------------------
 # What‑If Controls
 # -------------------------
+def _clamp(value, lo, hi):
+    """Clamp a saved value into a widget's `[lo, hi]` range.
+
+    A blank/fresh plan stores `spending = 0` (and other fields can be
+    missing entirely), while the number_input widgets below declare a
+    non-zero `min_value`. Streamlit raises `StreamlitValueBelowMinError`
+    (or `...AboveMaxError`) if the `value` passed is outside the range,
+    so every direct read from `data[...]` must be clamped (and defaulted)
+    before it reaches the widget. Non-numeric saved values fall back to
+    `lo` rather than raising `ValueError` on `float(...)`.
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        v = float(lo)
+    return max(float(lo), min(float(hi), v))
+
+
 st.subheader("Adjust Scenario")
 
 col1, col2 = st.columns(2)
@@ -133,22 +151,41 @@ with col1:
         "Person 1 retirement age",
         min_value=0.0,
         max_value=80.0,
-        value=float(data["person1"]["retirement_age"]),
+        value=_clamp(
+            data.get("person1", {}).get("retirement_age", 60.0), 0.0, 80.0
+        ),
         step=0.5,
     )
-    contrib_p1 = st.number_input("Person 1 monthly contribution (£)", 0.0, 5000.0, float(data["person1"]["monthly_contrib"]))
+    contrib_p1 = st.number_input(
+        "Person 1 monthly contribution (£)",
+        0.0,
+        5000.0,
+        _clamp(data.get("person1", {}).get("monthly_contrib", 0.0), 0.0, 5000.0),
+    )
 
 with col2:
     ret_age_p2 = st.number_input(
         "Person 2 retirement age",
         min_value=0.0,
         max_value=80.0,
-        value=float(data["person2"]["retirement_age"]),
+        value=_clamp(
+            data.get("person2", {}).get("retirement_age", 60.0), 0.0, 80.0
+        ),
         step=0.5,
     )
-    contrib_p2 = st.number_input("Person 2 monthly contribution (£)", 0.0, 5000.0, float(data["person2"]["monthly_contrib"]))
+    contrib_p2 = st.number_input(
+        "Person 2 monthly contribution (£)",
+        0.0,
+        5000.0,
+        _clamp(data.get("person2", {}).get("monthly_contrib", 0.0), 0.0, 5000.0),
+    )
 
-spending = st.number_input("Annual spending target (£)", 5000.0, 200000.0, float(data["spending"]))
+spending = st.number_input(
+    "Annual spending target (£)",
+    5000.0,
+    200000.0,
+    _clamp(data.get("spending", 5000.0), 5000.0, 200000.0),
+)
 
 growth_rate = st.slider("Expected investment growth rate", 0.00, 0.10, 0.05, step=0.005)
 inflation = st.slider("Inflation assumption", 0.00, 0.05, 0.025, step=0.005)
