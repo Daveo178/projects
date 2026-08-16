@@ -289,14 +289,18 @@ class IncomeVsSpendingChartToggleTests(unittest.TestCase):
 
     def test_toggle_on_returns_two_columns_and_combined_spending(self):
         """When ON the chart drops the Mortgage Payment column and the
-        Spending column equals ``lifestyle + mortgage_payment``."""
+        Spending column equals the engine's ``spending`` series — which
+        under this flag ALREADY includes the mortgage (engine
+        ``total_need = spending``, see simulation/engine.py step 7).
+        The helper must NOT add mortgage_payment again (that would
+        double-count and push the line above the income bars)."""
         from simulation.charts import income_vs_spending_chart
         df = income_vs_spending_chart(
             self._results(), include_mortgage_in_spending=True
         )
         self.assertEqual(set(df.columns), {"Year", "Income", "Spending"})
-        # 30000 lifestyle + 8000 mortgage = 38000 per year.
-        self.assertEqual(df["Spending"].tolist(), [38000] * 5)
+        # Spending series is the TOTAL figure (mortgage already inside).
+        self.assertEqual(df["Spending"].tolist(), [30000] * 5)
         self.assertNotIn("Mortgage Payment", df.columns)
 
     def test_toggle_on_handles_missing_mortgage_payment_field(self):

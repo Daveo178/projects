@@ -227,3 +227,110 @@ class FormatEventSummaryMalformedTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLifeEventDataclass(unittest.TestCase):
+    """`LifeEvent` is the SINGLE event dataclass post-refactor (cash
+    one-offs AND downsizing — distinguished by `sell_property_value > 0`
+    inside the engine rather than by separate sibling dataclasses).
+    These tests lock in the round-trip behaviour that pages 1/5/6/8/13
+    rely on: a dict-saving JSON shape unwrapped via `**` should
+    instantiate cleanly as a `LifeEvent` regardless of which kind
+    the dict is, and the engine's value-based predicates should
+    correctly classify each shape.
+    """
+
+    def test_cash_dict_round_trip(self):
+        from models.events import LifeEvent
+        ev = LifeEvent(
+            **{"year": 5, "amount": 25000, "description": "Inheritance"}
+        )
+        # Cash shape — `amount` set; downsizing fields fill from the
+        # dataclass `= 0.0` defaults because the dict didn't carry them.
+        self.assertEqual(ev.year, 5)
+        self.assertEqual(ev.description, "Inheritance")
+        self.assertEqual(ev.amount, 25000)
+        self.assertEqual(ev.sell_property_value, 0.0)
+        self.assertEqual(ev.new_property_value, 0.0)
+        # Lock the engine's value-based dispatch predicate. A cash
+        # event (sell=0) skips the downsizing branch.
+        self.assertFalse(ev.sell_property_value > 0)
+        self.assertNotEqual(ev.amount, 0)
+
+    def test_downsizing_dict_round_trip(self):
+        from models.events import LifeEvent
+        ev = LifeEvent(
+            **{
+                "year": 10,
+                "sell_property_value": 400000,
+                "new_property_value": 250000,
+                "description": "Downsizing",
+            }
+        )
+        # Downsizing shape — `amount` is the dataclass default because
+        # the saved dict didn't carry an `amount` key.
+        self.assertEqual(ev.year, 10)
+        self.assertEqual(ev.description, "Downsizing")
+        self.assertEqual(ev.amount, 0.0)
+        self.assertEqual(ev.sell_property_value, 400000)
+        self.assertEqual(ev.new_property_value, 250000)
+        # Lock the engine's value-based dispatch predicate. A real
+        # downsizing (sell > 0) routes into the downsizing branch.
+        self.assertTrue(ev.sell_property_value > 0)
+        self.assertEqual(ev.amount, 0)
+
+    def test_memo_dict_round_trip(self):
+        """Edge case: a memo event has both `amount == 0` AND no
+        `sell_property_value` key. After `LifeEvent(**d)` it should
+        have amount=0 AND sell=0 so the engine falls through to the
+        `triggered.append(event.description)` memo path."""
+        from models.events import LifeEvent
+        ev = LifeEvent(
+            **{"year": 7, "description": "Note"}
+        )
+        self.assertEqual(ev.year, 7)
+        self.assertEqual(ev.description, "Note")
+        self.assertEqual(ev.amount, 0.0)
+        self.assertEqual(ev.sell_property_value, 0.0)
+        # Neither predicate fires — falls through to the memo branch.
+        self.assertFalse(ev.sell_property_value > 0)
+        self.assertEqual(ev.amount, 0)
+
+    def test_legacy_cash_dict_does_not_silently_flip_to_downsizing(self):
+        """Defensive: a legacy int-amount cash dict must NOT be
+        misclassified as downsizing. Some early saved JSONs have
+        integer `amount` (no `amount >= 0` check), but as long as
+        `sell_property_value` is absent (and thus defaults to 0.0),
+        the engine takes the cash branch — proven by the predicate
+        assertions."""
+        from models.events import LifeEvent
+        ev = LifeEvent(
+            **{"year": 3, "amount": 100, "description": "Cash only"}
+        )
+        self.assertEqual(ev.amount, 100)
+        self.assertEqual(ev.sell_property_value, 0.0)
+        self.assertFalse(ev.sell_property_value > 0)
+
+    def test_downsizing_event_symbol_pruned(self):
+        """Post-refactor the `DownsizingEvent` symbol is GONE from
+        `models.events` — its presence would be a regression of the
+        structural half of the consolidation (the dataclass was folded
+        into `LifeEvent` so callers shouldn't be allowed to construct
+        an instance of the old sibling type). Asserts the symbol is
+        absent on the module surface."""
+        import models.events as events_mod
+        self.assertFalse(
+            hasattr(events_mod, "DownsizingEvent"),
+            "DownsizingEvent should have been pruned — its presence "
+            "is a regression of the structural half of the consolidation.",
+        )
+
+    def test_build_event_dispatcher_is_pruned(self):
+        """`build_event` was a sibling dataclass dispatcher; both
+        concerns are gone now, so the function should not exist."""
+        import models.events as events_mod
+        self.assertFalse(
+            hasattr(events_mod, "build_event"),
+            "build_event should have been pruned — every callsite was "
+            "rewritten to use LifeEvent(**e) directly.",
+        )

@@ -1,5 +1,7 @@
 import pandas as pd
 
+from .years_and_months import format_age_label
+
 
 def to_int_pounds(values):
     """Round a list/Series of floats to whole-pound integers for display.
@@ -83,28 +85,58 @@ def pension_breakdown_chart(simulation_results):
     })
 
 
+def failure_age_histogram(failure_years, current_age):
+    """Build a chronologically ordered, month-labelled failure histogram.
+
+    Monte Carlo stores failures as integer year offsets, while the UI's
+    current age may be fractional (for example, ``55 + 10 / 12`` from the
+    years-and-months input). Adding those values directly to a chart axis
+    produces labels such as ``75.833333333333336``. Keep the precise age
+    calculation, but render each bucket with the shared ``Xy Ym`` formatter
+    and treat the labels as categorical values.
+
+    Returns a DataFrame with ``Failure Age`` labels and ``Failed Runs``
+    counts. The labels are ordered by their underlying numeric age rather
+    than alphabetically (so ``100y`` cannot appear before ``76y``).
+    """
+    ages = sorted(
+        float(failure_year) + float(current_age)
+        for failure_year in failure_years
+        if failure_year is not None
+    )
+    labels = [format_age_label(age) for age in ages]
+    counts = pd.Series(labels, dtype="string").value_counts()
+    ordered_labels = list(dict.fromkeys(labels))
+    return pd.DataFrame({
+        "Failure Age": ordered_labels,
+        "Failed Runs": [int(counts[label]) for label in ordered_labels],
+    })
+
+
 def income_vs_spending_chart(simulation_results, include_mortgage_in_spending=False):
     """Render the Income/Spending chart frame.
 
     When ``include_mortgage_in_spending=True`` (matches the toggle on
     ``pages/3_Assets.py``) the returned DataFrame has TWO columns —
-    ``Income`` and a single combined ``Spending`` line that is
-    ``lifestyle_spending + mortgage_payment`` per year. The viewer
-    sees total household outgoings as one line, which matches how a
-    budget feels in the wallet ("how much am I actually spending?").
+    ``Income`` and a single ``Spending`` line. The engine's
+    ``total_need`` treats the user's spending figure as ALREADY
+    covering the mortgage (``total_need = spending`` — see
+    ``simulation/engine.py`` step 7), so the Spending series shown
+    here is exactly that figure: total household outgoings as one
+    line, matching how a budget feels in the wallet ("how much am I
+    actually spending?").
 
     When ``include_mortgage_in_spending=False`` (the default / today's
     behaviour) the DataFrame has THREE columns — ``Income``,
     ``Spending`` (lifestyle only), and ``Mortgage Payment`` as a
     separate line. The viewer can see the split between mortgage and
-    lifestyle outgoings.
+    lifestyle outgoings. The engine funds ``total_need = spending +
+    mortgage_paid`` on top.
 
-    Engine drawdown math is unchanged either way — both lifestyle and
-    mortgage are already covered by ``total_need`` in the simulator
-    (``total_need = spending + mortgage_paid`` in
-    ``simulation/engine.py``). The flag is purely a chart-display
-    preference, sourced from ``st.session_state.household_data`` at
-    each page render.
+    The flag is sourced from ``st.session_state.household_data`` at
+    each page render and now drives BOTH the engine's ``total_need``
+    AND this chart's Spending line — the two stay consistent (flip
+    the toggle and the income bars move to match the new target).
 
     ``mortgage_payment`` is a newer results field. Older saved sessions
     may still carry results from before the field existed — fall back
@@ -118,12 +150,14 @@ def income_vs_spending_chart(simulation_results, include_mortgage_in_spending=Fa
         simulation_results.get("mortgage_payment", [0.0] * len(years))
     )
     if include_mortgage_in_spending:
+        # Spending already includes the mortgage (engine `total_need =
+        # spending` under this flag) — show it as-is, do NOT add
+        # mortgage_payment again (that would double-count and push the
+        # line above the income bars).
         return pd.DataFrame({
             "Year": years,
             "Income": to_int_pounds(simulation_results["income"]),
-            # Element-wise sum per year. `zip` is the simplest tool here;
-            # pandas is overkill for two short integer series.
-            "Spending": [s + m for s, m in zip(spending, mortgage_payment)],
+            "Spending": to_int_pounds(simulation_results["spending"]),
         })
     return pd.DataFrame({
         "Year": years,

@@ -8,11 +8,16 @@ class Person:
 
     Field semantics
     ---------------
-    `name`                : display name. Currently "Dave" / "Shaz" but the
+    `name`                : display name. Normally "Person 1" / "Person 2" but the
                             engine doesn't depend on either string.
-    `age`                 : current age in years (int). The simulation loop
-                            starts at year 0 and adds this to get absolute
-                            age for pension kick-in / mortality hooks.
+    `age`                 : current age in years (float, accepts months
+                            via the Pension page's `years_and_months_input`
+                            widget — e.g. `55 years 6 months` →
+                            `55.5`). The simulation loop starts at year 0
+                            and adds this to get absolute age for pension
+                            kick-in / mortality hooks. Legacy `int`-typed
+                            saved JSONs still construct cleanly via
+                            Python duck-typing.
     `retirement_age`      : age at which the partner STOPS contributing to
                             their DC pot. Now a `float` so the Pensions
                             page can enter fractional values (e.g. `60
@@ -25,11 +30,16 @@ class Person:
                             correct interpretation). Mirrors the float-
                             typed `Mortgage.end_year` field with the same
                             partial-year contract.
-    `state_pension_age`   : int. Age at which State Pension begins paying
-                            for this partner. Single-year precision is
-                            preserved because the State Pension is a
-                            government-set threshold that doesn't have a
-                            "half a year" semantic in real life.
+    `state_pension_age`   : float. Age at which State Pension begins
+                            paying for this partner. Float-typed to keep
+                            the type system uniform with the other
+                            Person ages; in practice the user enters
+                            whole-year values, but the years+months
+                            widget on the Pensions page now lets the
+                            user enter a fractional value if the
+                            underlying government threshold is ever
+                            approximated to a half-year. The engine
+                            math is duck-typed and unchanged.
     `dc_pot`              : £ balance of this partner's defined-contribution
                             pension pot at simulation start. Compounds
                             monthly at `dc_growth_rate` (annuity-due) and
@@ -42,10 +52,14 @@ class Person:
                             Indexed annually by `db_growth_rate` once
                             active, so the value at year N is `base *
                             (1+r)**(N - draw_age)`.
-    `draw_age`            : age at which DB pension begins paying. Defaults
-                            to 60. Independent of `retirement_age` so a
-                            partner can stop working earlier than they
-                            start DB drawdown (or later).
+    `draw_age`            : float. Age at which DB pension begins paying.
+                            Defaults to 60.0. Independent of
+                            `retirement_age` so a partner can stop
+                            working earlier than they start DB drawdown
+                            (or later). Float-typed for uniformity with
+                            the other Person ages; the Pensions page
+                            renders the years+months widget for this
+                            field too.
 
     `monthly_contrib`     : legacy absolute £-per-month DC contribution.
                             Used only when `monthly_contrib_pct == 0.0`,
@@ -89,9 +103,25 @@ class Person:
     applied to mortgage amortisation in step 4.
     """
     name: str
-    age: int
+    # Months precision — same model as `retirement_age` and the
+    # `Mortgage.end_year` field. Lets a user enter "55 years 6 months"
+    # for `age` (or "67 years 3 months" for `state_pension_age`)
+    # instead of being forced to pick a whole-year integer. The
+    # Pensions page now pairs each of these fields with a years+
+    # months widget so the partial-year-precision round-trips
+    # through the form. Engine math is duck-typed float
+    # (e.g. `(age + year) >= retirement_age` works for any int/float
+    # mix on either side) so no engine changes are needed for the
+    # new contract. `state_pension_age` and `draw_age` were
+    # historically kept as int because the underlying government /
+    # scheme thresholds don't have a "half a year" semantic in real
+    # life; we float them so the months widget renders uniformly
+    # across all four Person fields, accepting that the persisted
+    # whole-year values are now stored with a `.0` suffix in JSON.
+    # Legacy int saved JSONs still construct cleanly.
+    age: float
     retirement_age: float
-    state_pension_age: int
+    state_pension_age: float
     dc_pot: float
     # Back-compat defaults: legacy saved plans without these keys still
     # construct and behave like a base-rate, no-DB, no-contributions
@@ -99,7 +129,7 @@ class Person:
     # above so Python's "non-default after default" rule is honoured
     # for `Person(**data)` unpacking anywhere in the codebase.
     db_income: float = 0.0
-    draw_age: int = 60               # age at which DB pension begins paying
+    draw_age: float = 60.0           # age at which DB pension begins paying
     monthly_contrib: float = 0.0
     income_until_retirement: float = 0.0  # £-per-year salary at year 0; see docstring above.
 
@@ -123,16 +153,54 @@ class Person:
     # wage inflation. Compounds annually on the base figure, stops at retirement.
     income_growth_rate: float = 0.025
 
-    # Monthly DC contribution as a percentage of (income-indexed) annual
-    # earnings. The Pensions page exposes this as a slider (default 15% — a
-    # realistic combined employee + employer total pension contribution). When
-    # 0.0, the engine falls back to the legacy `monthly_contrib` £ figure so
-    # saved plans targeting a £ amount continue to work unchanged. The
-    # Pensions page performs a soft migration that auto-derives a % from a
-    # legacy £ month figure the first time a user with stored data opens it.
+    # Legacy contribution fields — kept for BC. The Quick Estimate
+    # page now writes the new `personal_contrib_pct` +
+    # `employer_contrib_pct` split instead; the Pensions page
+    # still binds these for users who haven't visited Quick
+    # Estimate. The engine prefers the new fields when ANY of
+    # them is set, and falls back to the legacy fields when all
+    # three are 0.0 so existing saved plans (which have only
+    # monthly_contrib_pct set) continue to behave exactly as
+    # before.
     monthly_contrib_pct: float = 0.0
 
+    # Personal (employee) DC contribution split — the employee
+    # side of the pension contribution. Entered EITHER as a % of
+    # (wage-inflation indexed) annual income OR as a flat
+    # £-per-month amount, NOT both. Precedence rules (engine &
+    # AA projection): `% > £` — when `personal_contrib_pct > 0`
+    # the engine ignores `personal_contrib_flat_monthly` so a
+    # legacy user saving both fields still sees the % honoured.
+    # Defaults 0.0 reflect the fact that the Quick Estimate page
+    # ALWAYS writes these explicitly; 0 is a defensive "neither
+    # field set, fall back to legacy" signal rather than a
+    # meaningful empty default.
+    personal_contrib_pct: float = 0.0
+    personal_contrib_flat_monthly: float = 0.0
+
+    # Employer DC contribution — typically a match-contribution
+    # percentage of (wage-inflation indexed) annual income
+    # (e.g. 3% is a common UK private-sector baseline, public
+    # sector and civil-service schemes regularly run 5-15%).
+    # Always £/yr in the engine / AA; the Quick Estimate page
+    # exposes ONLY a % slider (no flat £ amount option — employers
+    # are contracted as % of qualifying earnings in real life).
+    # Default 0.0 keeps BC with Plans saved before the feature
+    # existed (the engine treats 0 as "no employer contribution,
+    # personal contribution stands alone").
+    employer_contrib_pct: float = 0.0
+
     life_events: List[Union[LifeEvent, dict]] = field(default_factory=list)
+
+    # Date-of-birth + retirement date (ISO strings like "1970-03-15").
+    # Added alongside the existing float `age` / `retirement_age` fields
+    # so the Pensions page can persist date-picker values and pre-fill
+    # them on the next visit. The engine reads `age` / `retirement_age`
+    # as floats (unchanged) — these strings are purely for UI round-
+    # tripping. Legacy saved JSONs without these keys construct cleanly
+    # because both default to "".
+    dob: str = ""
+    retirement_date: str = ""
 
     def years_to_retirement(self):
         # Returns a `float` so callers that compute a partial-year

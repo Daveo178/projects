@@ -3,30 +3,77 @@ from dataclasses import dataclass
 
 @dataclass
 class LifeEvent:
-    year: int
-    description: str
-    amount: float  # positive = money in, negative = money out
+    """A single life event (cash one-off OR downsizing — same dataclass).
 
+    Pre-refactor this dataclass held only the one-off-cash shape:
+    `LifeEvent(year, description, amount)`. Downsizing lived in a
+    SIBLING `DownsizingEvent(year, sell_property_value,
+    new_property_value)` dataclass — the two were kept disjoint
+    so the engine could duck-type them via attribute presence.
 
-@dataclass
-class DownsizingEvent:
+    Post-refactor there is no `DownsizingEvent` anymore. Downsizing is
+    a single extra discriminator inside this dataclass: a real cash
+    event has `amount != 0` AND (dataclass-default)
+    `sell_property_value == 0`; a real downsizing event has
+    `sell_property_value > 0` AND (dataclass-default) `amount == 0`.
+    The engine classifies via these value-based predicates (see
+    `simulation/engine.py`'s step 5) so cash and downsizing remain
+    mutually exclusive at the branch level — value predicates are
+    coprime because dataclass defaults are 0.0.
+
+    Field-order rule: optional fields with defaults follow the three
+    required positionals. This keeps the three-positional constructor
+    `LifeEvent(year=Y, description=D, amount=A)` (the historic
+    cash-only call shape) exactly equivalent to before, and lets a
+    JSON-style `LifeEvent(**d)` round-trip find `sell_property_value`
+    / `new_property_value` as keywords on downsizing dicts (where
+    `pages/5_Life_Events.py`'s downsizing branch saves them) and
+    silently default to 0.0 on cash dicts (where those keys are
+    absent).
+
+    `description` is intentionally a required positional (no default) —
+    every UI save path in `pages/5_Life_Events.py` includes a
+    description (real text or empty string), and a missing description
+    would render as an opaque memo row in `triggered` lists.
+    """
     year: int
-    sell_property_value: float
-    new_property_value: float
+    # Default `"Downsizing"` preserves pre-refactor `DownsizingEvent`'s
+    # default behaviour: a saved downsizing dict that happens to be
+    # missing a `description` key still round-trips cleanly with the
+    # sentinel value rather than crashing on missing-positional. Page 5
+    # always writes a description in practice, so this default only
+    # matters for hand-edited or migrated JSON. For a CASH one-off the
+    # saved dict carries a real description so the default is never
+    # observed.
     description: str = "Downsizing"
+    # Positive = money in, negative = money out. Defaults to 0.0 so
+    # `LifeEvent(**downsize_dict)` round-trips a downsizing dict (which
+    # has no `amount` key) without raising.
+    amount: float = 0.0
+    sell_property_value: float = 0.0
+    new_property_value: float = 0.0
 
 
 # -------------------------------------------------------
 # Pure helpers used by the Streamlit life-events page.
 # -------------------------------------------------------
-# Events are persisted as plain dicts in `household_data.json`. The engine
-# (`simulation/engine.py`) duck-types them via `hasattr(event, "amount")`
-# (one-off cash event) vs `hasattr(event, "sell_property_value")` (downsizing
-# event). Mirroring that classification here in a pure helper:
-#   * lets the UI render both kinds without crashing on `KeyError`,
-#   * drops the need to re-list the discriminating keys in every page that
-#     wants to display events,
-#   * makes the rule unit-testable without importing Streamlit.
+# Events are persisted as plain dicts in `household_data.json`. The
+# engine (`simulation/engine.py`) classifies an in-memory `LifeEvent`
+# via value-based predicates (`event.sell_property_value > 0` for
+# downsizing; `event.amount != 0` else for cash; appended description
+# for memos). The page-side helpers below operate on the DICT shape
+# the page commits to JSON — so the UI can render a saved or
+# in-progress event without first rebuilding a `LifeEvent` instance.
+
+# The dict-shape and dataclass-shape predicates agree because:
+#   * a downsizing dict has `sell_property_value` set AND no
+#     `amount` key. After `LifeEvent(**d)` the resulting object has
+#     `amount == 0.0` (default) and `sell_property_value == <real>`,
+#     satisfying the engine's `sell_property_value > 0` gate.
+#   * a cash dict has `amount` set AND no `sell_property_value` key.
+#     After `LifeEvent(**d)` the object has
+#     `sell_property_value == 0.0` (default) and `amount == <real>`,
+#     falling through to the cash-or-memo branch.
 EVENT_KIND_CASH = "cash"
 EVENT_KIND_DOWNSIZE = "downsize"
 

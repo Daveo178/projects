@@ -1,1 +1,1 @@
-from .events import LifeEvent, DownsizingEvent
+from .events import LifeEvent

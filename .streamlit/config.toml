@@ -1,0 +1,26 @@
+# Brand-aligned Streamlit theme. Mirrors the `:root` palette on
+# `brand_chrome.py`'s `_LIGHT_CSS_BODY` so the native theme AND the
+# test-id CSS rules paint the same colours — less reliance on
+# test-id selectors to override defaults. `backgroundColor` is
+# pinned to `#dde6e6` (== `--brand-paper`) so the Streamlit chrome
+# wrapper and the inner app body read as one consistent off-cream
+# rather than two slightly different shades under zoom. `textColor`
+# locks body / sidebar / label text to `--brand-ink` (otherwise
+# Streamlit would auto-pick a colour that doesn't match the CSS
+# palette).
+[theme]
+base = "light"
+primaryColor = "#2a6f6f"
+backgroundColor = "#dde6e6"
+secondaryBackgroundColor = "#e8f1ef"
+textColor = "#1a2533"
+# `sans serif` tells Streamlit's native chrome (page title, sidebar
+# header, footer, etc.) to use the platform's default sans-serif
+# system font — matches the system font stack declared in
+# `brand_chrome.py`'s `_LIGHT_CSS_BODY` (`-apple-system,
+# BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+# sans-serif`). Streamlit's
+# `theme.font` only accepts `sans serif` | `serif` | `monospace`
+# (no Google Font loading via this key), so `sans serif` is the
+# closest native match to our system stack.
+font = "sans serif"

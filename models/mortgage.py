@@ -27,10 +27,20 @@ class Mortgage:
                             regular payment. Same monthly→annual cadence
                             via the Assets page form.
 
-    `include_in_spending` : chart-display flag. When True the Income/Spending
-                            chart helper folds `mortgage_payment` into the
-                            `Spending` series instead of showing two lines.
-                            Engine drawdown math is unchanged either way.
+    `include_in_spending` : spending-figure flag. When True the user's
+                            `Household.spending_target` figure ALREADY
+                            covers the mortgage payment — the engine's
+                            `total_need = spending` (the mortgage is paid
+                            out of the spending figure, NOT on top of it),
+                            and the Income/Spending chart helper shows the
+                            single combined Spending series. When False
+                            (default) spending is lifestyle-only, the
+                            engine funds `total_need = spending +
+                            mortgage_paid`, and the chart shows Spending
+                            + a separate Mortgage Payment line. The flag
+                            therefore drives BOTH the engine's drawdown
+                            target and the chart display — flip it and
+                            the income bars move to match the new target.
     """
     outstanding: float
     rate: float

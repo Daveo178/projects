@@ -174,7 +174,7 @@ class TestAASurfaceContract(unittest.TestCase):
         self.assertEqual(effective_aa(400_000.0), MIN_TAPERED_AA)
 
     def test_per_spouse_independence_two_realistic_partners(self):
-        # Dave £60k → £60k AA. Shaz £250k → £35k AA. Independent.
+        # Person 1 £60k → £60k AA. Person 2 £250k → £35k AA. Independent.
         self.assertEqual(effective_aa(60_000.0), 60_000.0)
         self.assertAlmostEqual(effective_aa(250_000.0), 35_000.0)
 

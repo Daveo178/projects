@@ -23,16 +23,13 @@ Pensions page):
   - Adjusted-income rules (HMRC also requires adjusted income > £260,000
     before the taper activates; we approximate by collapsing the two-stage
     test into a single threshold-income check)
-  - Employer pension contributions (only the employee side is captured on
-    the Pensions page, so the projected AA may be overestimated when an
-    employer's scheme is in play)
   - Carry-forward from under-utilised AA in the previous three tax years
   - Defined-benefit scheme accrual values (not modelled at all in this app)
 
 **Per-spouse independence**
 
-Each partner has their own AA envelope — Shaz and Dave's contributions do
-not share one pot. So `effective_aa(income_dave)` and `effective_aa(income_shaz)`
+Each partner has their own AA envelope — Person 1 and Person 2's contributions do
+not share one pot. So `effective_aa(income_person1)` and `effective_aa(income_person2)`
 are computed separately, and the household AA exposure is the sum of the two
 partner statuses (each partner's annual contribution vs each partner's own
 effective AA). The page-side panel surfaces it that way, mirroring the
@@ -73,22 +70,58 @@ def effective_aa(threshold_income: float) -> float:
 
 
 def project_annual_contribution(person_dict: dict) -> float:
-    """Return the expected annual employee pension contribution £ figure.
+    """Return the expected TOTAL annual pension contribution £ figure
+    (employee + employer).
+
+    HMRC's Annual Allowance caps TOTAL pension contributions —
+    employee AND employer combined — so the projection here must
+    include the employer percentage contribution once the
+    Quick-Estimate-style split is in play.
 
     Projection rules (mirrors the Pensions page + engine precedence):
 
-      1. If `monthly_contrib_pct > 0`, use:
-             annual_income * pct
-         where annual_income is `income_until_retirement`. This matches the
-         engine behaviour: the % slider is the live input and the £ figure
-         is only a legacy fallback.
-      2. Otherwise fall back to the legacy £ figure:
-             monthly_contrib * 12
-      3. If neither field is present / both are zero, return 0.0.
+      1. New split model (Quick Estimate + any user with the new
+         fields set). When ANY of the three new fields is set —
+             personal_contrib_pct > 0
+             personal_contrib_flat_monthly > 0
+             employer_contrib_pct > 0
+         — the projection sums the personal AND the employer
+         contributions and IGNORES the legacy fields entirely.
+
+         Precedence within the personal side: `% > £`. Same
+         contract as the engine `_monthly_dc_contrib` helper so a
+         bad input that bumps both fields at once still resolves
+         deterministically.
+
+         Returns:
+             personal_annual = (pct > 0)
+                 ? income * personal_contrib_pct
+                 : personal_contrib_flat_monthly * 12
+             employer_annual = income * employer_contrib_pct
+             total = personal_annual + employer_annual
+
+      2. Legacy model (saved plans predating the Quick Estimate
+         split). When ALL THREE new fields are zero, fall back to
+         the existing logic:
+           * `monthly_contrib_pct > 0` → `income * monthly_contrib_pct`
+           * otherwise → `monthly_contrib * 12`
+           * if neither is present, return 0.0.
 
     Missing or non-numeric input fields coerce to 0.0 so the helper is safe
     to call with partial session_state dicts (e.g. on first-page load).
     """
+    personal_pct = _safe_float(person_dict.get("personal_contrib_pct", 0.0))
+    personal_flat = _safe_float(person_dict.get("personal_contrib_flat_monthly", 0.0))
+    employer_pct = _safe_float(person_dict.get("employer_contrib_pct", 0.0))
+    if (personal_pct > 0.0) or (personal_flat > 0.0) or (employer_pct > 0.0):
+        income = _safe_float(person_dict.get("income_until_retirement", 0.0))
+        personal_annual = (
+            income * personal_pct
+            if personal_pct > 0.0
+            else personal_flat * 12.0
+        )
+        employer_annual = income * employer_pct
+        return personal_annual + employer_annual
     pct = _safe_float(person_dict.get("monthly_contrib_pct", 0.0))
     if pct > 0.0:
         return _safe_float(person_dict.get("income_until_retirement", 0.0)) * pct

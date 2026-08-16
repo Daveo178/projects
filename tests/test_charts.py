@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 
 from simulation.charts import (
+    failure_age_histogram,
     income_vs_spending_chart,
     net_worth_chart,
     to_int_pounds,
@@ -97,6 +98,31 @@ class TestToIntPoundsPassThrough(unittest.TestCase):
         self.assertEqual(out[5], 0)
         self.assertEqual(out[6], -13)
         self.assertTrue(all(pd.isna(out[i]) for i in (1, 2, 3, 4)))
+
+
+class TestFailureAgeHistogram(unittest.TestCase):
+    """Failure ages are categorical month labels, not raw float noise."""
+
+    def test_labels_fractional_current_age_in_months_and_sort_chronologically(self):
+        frame = failure_age_histogram(
+            [20, 0, 20, 1],
+            55 + 10 / 12,
+        )
+        self.assertEqual(
+            frame.to_dict("records"),
+            [
+                {"Failure Age": "55y 10m", "Failed Runs": 1},
+                {"Failure Age": "56y 10m", "Failed Runs": 1},
+                {"Failure Age": "75y 10m", "Failed Runs": 2},
+            ],
+        )
+
+    def test_ignores_success_sentinels(self):
+        frame = failure_age_histogram([None, 5, None], 60.0)
+        self.assertEqual(
+            frame.to_dict("records"),
+            [{"Failure Age": "65y", "Failed Runs": 1}],
+        )
 
 
 class TestChartHelpersEmitInts(unittest.TestCase):

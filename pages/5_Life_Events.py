@@ -1,4 +1,5 @@
 import streamlit as st
+from brand_chrome import apply_chrome
 
 from models.events import (
     EVENT_KIND_CASH,
@@ -6,13 +7,22 @@ from models.events import (
     format_event_summary,
 )
 from storage import init_household, save_household
-
-st.title("📅 Life Events")
+from pages_helpers.global_controls import render_global_controls_sidebar
 
 # ----------------------------------------
-# 1. Initialise session_state — seed from disk on first visit
+# Initialise session_state + apply brand chrome (stylesheet
+# injection — LIGHT palette only, since the dark-mode radio was
+# dropped) BEFORE the page's <st.title>...</st.title> so the
+# stylesheet is in place before the title paints. Same pattern
+# as pages 2 / 4 / 6 / etc. — `init_household -> apply_chrome ->
+# title` so we never flash native Streamlit chrome on the title
+# element before the brand stylesheet injects.
 # ----------------------------------------
 init_household(st.session_state)
+apply_chrome()
+render_global_controls_sidebar()
+
+st.title("📅 Life Events")
 
 # Ensure events list exists
 if "events" not in st.session_state.household_data:
@@ -55,9 +65,9 @@ is_cash = event_kind_label == "One-off cash event"
 # Year is shared by all event kinds.
 event_year = st.number_input(
     "Years from now",
-    0,
-    50,
-    last_event.get("year", 0),
+    0.0,
+    50.0,
+    float(last_event.get("year", 0)),
 )
 
 if is_cash:
@@ -96,11 +106,21 @@ if is_cash:
     # Amount is always entered as a POSITIVE magnitude; the page picks
     # the sign at save time. This prevents the easy mistake of typing
     # `25000` for an outflow (engine would silently treat it as inflow).
-    # The default preserves the original numeric type from the saved
-    # event (int vs float) — coercing to `int` would silently truncate
-    # fractional amounts if any future change ever stores decimals.
+    #
+    # The `int(...)` cast keeps the default int-typed so it matches the
+    # surrounding `number_input`'s int `min_value=0` / `max_value=1_000_000`
+    # / `step=100` — Streamlit raises `StreamlitMixedNumericTypesError`
+    # if any numeric arg differs in type. Without the cast, a fractional
+    # saved amount would round-trip back as float and crash the form
+    # on re-open. Truncation is benign for two reasons: (a) `step=100`
+    # already nudges users toward whole-pound amounts, and (b) the
+    # int-fallback `0` below is plain int (no cast needed — don't
+    # cargo-cult `int()` onto it). If a user ever saves a fractional
+    # amount to JSON, the next "Save Event" click silently overwrites
+    # it with the truncated whole-pound value — acceptable for money
+    # in this app, but worth knowing.
     if last_kind == EVENT_KIND_CASH and isinstance(last_amount, (int, float)):
-        amount_default = abs(last_amount)
+        amount_default = int(abs(last_amount))
     else:
         amount_default = 0
     event_amount_abs = st.number_input(
@@ -135,16 +155,40 @@ else:
     # at this value; the difference lands in Cash and any outstanding
     # mortgage balance is cleared (side effects handled in
     # simulation/engine.py).
-    sell_default = (
-        last_event.get("sell_property_value", 0)
-        if last_kind != EVENT_KIND_CASH
-        else 0
-    )
-    new_default = (
-        last_event.get("new_property_value", 0)
-        if last_kind != EVENT_KIND_CASH
-        else 0
-    )
+    # After deleting pages/9_Downsizing.py (its dedicated form used
+    # 400k/250k pre-fills for first-time users), Page 5 became the
+    # sole downsizing surface. Re-apply those pre-fills here for the
+    # truly-first-time branch ONLY (no prior downsizing event in
+    # `last_event`) so a brand-new user opening the downsizing
+    # kind-toggle sees a sensible starting point instead of `0 / 0`.
+    #
+    # Belt-and-suspenders gate: keyed on the DICT itself
+    # (`isinstance(last_event, dict) and "sell_property_value" in
+    # last_event`) rather than on the derived `last_kind` label.
+    # `last_kind` is computed two lines above via
+    # `last_kind = event_kind(last_event) or EVENT_KIND_CASH` — if
+    # `event_kind()` ever evolves to raise on a malformed shape, or
+    # the `or EVENT_KIND_CASH` fallback mis-classifies a corrupt
+    # downsizing dict, the kind-label gate would silently route to
+    # the pre-fill branch and overwrite the user's real saved
+    # £-amounts back to 400k / 250k. Inspecting the dict directly
+    # avoids that whole failure mode: any dict that ACTUALLY carries
+    # a `sell_property_value` key is treated as a real downsizing
+    # entry no matter what `event_kind` thinks of it. Conversely,
+    # the pre-fill branch only fires when the dict does NOT carry
+    # the downsizing discriminator — i.e. truly first-time.
+    if isinstance(last_event, dict) and "sell_property_value" in last_event:
+        # Real downsizing dict present — read the exact saved values
+        # (including legitimate 0). Bypasses any downstream mutation
+        # of `last_kind`.
+        sell_default = last_event.get("sell_property_value", 0)
+        new_default = last_event.get("new_property_value", 0)
+    else:
+        # First-time downsizing branch (no events yet, last event is
+        # cash, last event is malformed, or last_event is not a dict
+        # at all): back-fill the legacy Page 9 pre-fills.
+        sell_default = 400_000
+        new_default = 250_000
     event_sell_value = st.number_input(
         "Sell property for (£)",
         0,

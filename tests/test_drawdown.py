@@ -443,5 +443,168 @@ class TestIncomeLineMatchesTakeHomeBreakdown(unittest.TestCase):
                 )
 
 
+class TestDrawdownSuppressedPreRetirement(unittest.TestCase):
+    """Pre-retirement, the engine MUST NOT touch retirement assets
+    (DC / ISA / GIA / Cash) for drawdown — even if the user has set
+    `income_until_retirement=0` and the household is in cash-flow
+    deficit on paper. Drawdown is conceptually a post-retirement
+    activity; the Timeline page's annual-funding-sources stacked bar
+    must show zero draw bars before either partner has retired.
+
+    Pre-fix the engine would have drawn from DC / ISA / Cash in every
+    deficit year from year 0, producing the visual bug the user
+    reported: 'DC draw and ISA draw before the entered retirement
+    age' on the annual funding sources chart. Post-fix the engine
+    suppresses the whole drawdown block until at least one partner
+    is retired; the Income line in pre-retirement deficit years
+    simply sits below `spending + mortgage_paid` and the user sees
+    a real planning signal rather than a phantom-funded plan.
+    """
+
+    def _pre_retirement_deficit_household(self):
+        # Both partners age 55, both retiring at 60, both with
+        # income_until_retirement=0 (the 'neither works' scenario).
+        # Large DC pots, modest ISA / Cash. Spending = £35k drives a
+        # £35k/yr cash-flow deficit pre-retirement (plus mortgage
+        # payment on top in a separate test). No mortgage here so we
+        # isolate the income vs spending gap.
+        p1 = _make_person(
+            age=55, retirement_age=60, state_pension_age=99,
+            dc_pot=100_000, draw_age=99,
+            income=0.0, dc_growth=0.05,
+        )
+        p2 = _make_person(
+            age=55, retirement_age=60, state_pension_age=99,
+            dc_pot=100_000, draw_age=99,
+            income=0.0, dc_growth=0.05,
+        )
+        assets = [
+            Asset(
+                name="ISA", value=30_000, growth_rate=0.05,
+                asset_type="ISA",
+            ),
+            Asset(
+                name="Cash", value=15_000, growth_rate=0.0,
+                asset_type="Cash",
+            ),
+        ]
+        return _build_household(p1, p2, assets=assets, spending=35_000)
+
+    def test_no_drawdown_years_0_through_4(self):
+        # Years 0..4: both partners still working. ZERO draw bars on
+        # every per-source series.
+        r = run_simulation(self._pre_retirement_deficit_household(), years=10)
+        for y in range(5):
+            with self.subTest(year=y, age=55 + y):
+                self.assertEqual(r["ufpls_taxable_net"][y], 0.0)
+                self.assertEqual(r["ufpls_taxable_gross"][y], 0.0)
+                self.assertEqual(r["isa_draw"][y], 0.0)
+                self.assertEqual(r["gia_draw"][y], 0.0)
+                self.assertEqual(r["cash_draw"][y], 0.0)
+
+    def test_income_does_not_exceed_earned_pre_retirement(self):
+        # Pre-retirement with income_until_retirement=0, the Income
+        # line must NOT be inflated by phantom drawdown. It's just
+        # the take-home from £0 earned salary = £0.
+        r = run_simulation(self._pre_retirement_deficit_household(), years=10)
+        for y in range(5):
+            with self.subTest(year=y):
+                self.assertEqual(r["income"][y], 0.0)
+
+    def test_dc_pot_intact_pre_retirement(self):
+        # Smoking-gun: pre-fix, DC was being drawn down pre-retirement
+        # to fund the deficit. Post-fix, DC continues compounding at
+        # its growth rate (5%) and is NOT touched for drawdown until
+        # retirement. Compare against a closed-form no-drawdown
+        # baseline.
+        from simulation.engine import _dc_monthly_compound
+        h = self._pre_retirement_deficit_household()
+        r = run_simulation(h, years=10)
+        # Pre-retirement for both partners (age=55, retirement=60) =
+        # years 0..4. With income_until_retirement=0, the monthly
+        # contribution is 0 (no income × pct = 0), so the pot
+        # compounds at dc_growth_rate=5% with no drawdown. The engine
+        # reports dc_pot AFTER each year's compound (step 2a/2b
+        # mutates the pot in-place then appends), so the value at
+        # year y is the starting pot compounded (y+1) times.
+        expected_per_year = []
+        pot = 100_000.0
+        for _ in range(5):
+            pot = _dc_monthly_compound(pot, 0.05, 0.0, fraction=1.0)
+            expected_per_year.append(pot)
+        # expected_per_year[0] = 100k after 1 year of compound
+        # expected_per_year[4] = 100k after 5 years of compound
+        for y in range(5):
+            with self.subTest(year=y):
+                # The household dc_pot is p1+p2. If the pre-fix
+                # phantom drawdown were still in place, the engine
+                # value would be STRICTLY LESS than 2 × the
+                # compound-only baseline.
+                self.assertAlmostEqual(
+                    r["dc_pot"][y], 2 * expected_per_year[y], places=2,
+                )
+
+    def test_drawdown_resumes_post_retirement(self):
+        # Sanity that the gate OPENS post-retirement. Years 5+ (age
+        # 60+): both partners retired. With £35k spending and no
+        # income, drawdown must fire from year 5 onwards — at least
+        # one of the per-source series must be non-zero somewhere in
+        # the back half of the run.
+        r = run_simulation(self._pre_retirement_deficit_household(), years=10)
+        any_post_retirement_draw = any(
+            r["ufpls_taxable_gross"][y] > 0
+            or r["isa_draw"][y] > 0
+            or r["cash_draw"][y] > 0
+            for y in range(5, 10)
+        )
+        self.assertTrue(
+            any_post_retirement_draw,
+            "Post-retirement deficit must trigger drawdown — gate is open",
+        )
+
+    def test_partial_retirement_one_partner_unlocks_drawdown(self):
+        # Mixed household: p1 retires at 60, p2 keeps working until
+        # 99 (never). At year 5 (p1 age 60), p1 is retired and p2
+        # isn't. `any_retired` is True, so drawdown may fire. Pre-fix
+        # this scenario would have drawn from year 0 (both still
+        # working). Post-fix the drawdown starts at year 5.
+        p1 = _make_person(
+            age=55, retirement_age=60, state_pension_age=99,
+            dc_pot=200_000, draw_age=99,
+            income=0.0, dc_growth=0.05,
+        )
+        p2 = _make_person(
+            age=55, retirement_age=99, state_pension_age=99,
+            dc_pot=0.0, draw_age=99,
+            income=0.0, dc_growth=0.0,
+        )
+        assets = [
+            Asset(
+                name="ISA", value=50_000, growth_rate=0.05,
+                asset_type="ISA",
+            ),
+        ]
+        h = _build_household(p1, p2, assets=assets, spending=35_000)
+        r = run_simulation(h, years=10)
+        # Years 0..4: nobody retired → no drawdown bars.
+        for y in range(5):
+            with self.subTest(year=y, retired="neither"):
+                self.assertEqual(r["ufpls_taxable_gross"][y], 0.0)
+                self.assertEqual(r["isa_draw"][y], 0.0)
+        # Years 5+: p1 retired → drawdown may fire. Don't assert
+        # specific values (depend on UFPLS tax math + ISA growth)
+        # but at least one draw bar should be present somewhere.
+        any_post_y5 = any(
+            r["ufpls_taxable_gross"][y] > 0
+            or r["isa_draw"][y] > 0
+            or r["cash_draw"][y] > 0
+            for y in range(5, 10)
+        )
+        self.assertTrue(
+            any_post_y5,
+            "p1 retiring at year 5 should unlock the drawdown gate",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

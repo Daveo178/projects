@@ -75,3 +75,4 @@ logs/
 # =============================================
 .aider*
 household_data.json
+household_data.json.bak

@@ -602,5 +602,124 @@ class TestEngineNationalInsurance(unittest.TestCase):
         )
 
 
+class TestEffectiveTaxRateInDrawdown(unittest.TestCase):
+    """
+    Lock-down the effective_tax_rate series for years where UFPLS
+    drawdown is active. The numerator is `household_tax` (income tax
+    on earned + DB + State Pension + taxable UFPLS); the denominator
+    is `gross_income + taxable_draw + tax_free_draw` — total income
+    including the tax-free PCLS slice. These tests verify:
+
+      1. ETR stays in the [0%, 100%] band in every drawdown year.
+      2. The mathematical identity `household_tax / ETR ≈ total_income`
+         holds within floating-point tolerance (the inverse check).
+    """
+
+    def test_etr_bounded_zero_to_one_in_drawdown_years(self):
+        """ETR must never be negative or exceed 100% in any year
+        where UFPLS/PCLS drawdown fires."""
+        p1 = Person(
+            name="P1", age=60, retirement_age=60, state_pension_age=99,
+            dc_pot=100_000, db_income=0.0, monthly_contrib=0.0,
+            income_until_retirement=0.0, draw_age=99, pcls_percent=25,
+            income_growth_rate=0.0, monthly_contrib_pct=0.0,
+            dc_growth_rate=0.0, db_growth_rate=0.0,
+            state_pension_growth_rate=0.0,
+        )
+        p2 = Person(
+            name="P2", age=60, retirement_age=60, state_pension_age=99,
+            dc_pot=50_000, db_income=0.0, monthly_contrib=0.0,
+            income_until_retirement=0.0, draw_age=99, pcls_percent=25,
+            income_growth_rate=0.0, monthly_contrib_pct=0.0,
+            dc_growth_rate=0.0, db_growth_rate=0.0,
+            state_pension_growth_rate=0.0,
+        )
+        # Spending £30k/yr with no pension income forces UFPLS drawdown.
+        h = Household(
+            person1=p1, person2=p2, assets=[], mortgage=None,
+            spending_target=30_000, events=[], drawdown_strategy="Fixed",
+        )
+        r = run_simulation(h, years=5)
+
+        tax_free = r["tax_free_income"]
+        ufpls_gross = r["ufpls_taxable_gross"]
+        etr = r["effective_tax_rate"]
+
+        drawdown_years_found = 0
+        for y in range(5):
+            # Only assert in years where drawdown actually fired.
+            if tax_free[y] > 0 or ufpls_gross[y] > 0:
+                drawdown_years_found += 1
+                with self.subTest(year=y):
+                    self.assertGreaterEqual(
+                        etr[y], 0.0,
+                        f"ETR below 0% at year {y}",
+                    )
+                    self.assertLessEqual(
+                        etr[y], 1.0,
+                        f"ETR above 100% at year {y}",
+                    )
+        # Sanity: we actually tested at least one drawdown year.
+        self.assertGreater(
+            drawdown_years_found, 0,
+            "No drawdown years fired — test fixture is wrong",
+        )
+
+    def test_etr_inverse_identity_tax_over_etr_equals_total_income(self):
+        """For every year where ETR > 0, the inverse identity
+        `household_tax / ETR ≈ gross_income + taxable_draw +
+        tax_free_draw` must hold within £0.01 (FP tolerance for
+        the division round-trip)."""
+        p1 = Person(
+            name="P1", age=60, retirement_age=60, state_pension_age=99,
+            dc_pot=100_000, db_income=0.0, monthly_contrib=0.0,
+            income_until_retirement=0.0, draw_age=99, pcls_percent=25,
+            income_growth_rate=0.0, monthly_contrib_pct=0.0,
+            dc_growth_rate=0.0, db_growth_rate=0.0,
+            state_pension_growth_rate=0.0,
+        )
+        p2 = Person(
+            name="P2", age=60, retirement_age=60, state_pension_age=99,
+            dc_pot=50_000, db_income=0.0, monthly_contrib=0.0,
+            income_until_retirement=0.0, draw_age=99, pcls_percent=25,
+            income_growth_rate=0.0, monthly_contrib_pct=0.0,
+            dc_growth_rate=0.0, db_growth_rate=0.0,
+            state_pension_growth_rate=0.0,
+        )
+        h = Household(
+            person1=p1, person2=p2, assets=[], mortgage=None,
+            spending_target=30_000, events=[], drawdown_strategy="Fixed",
+        )
+        r = run_simulation(h, years=5)
+
+        gross = r["gross_income"]
+        tax = r["tax"]
+        etr = r["effective_tax_rate"]
+        tax_free = r["tax_free_income"]
+        ufpls_gross = r["ufpls_taxable_gross"]
+
+        for y in range(5):
+            total_income = gross[y] + ufpls_gross[y] + tax_free[y]
+            with self.subTest(year=y, total_income=total_income):
+                if etr[y] > 0 and total_income > 0:
+                    # ETR = tax / total_income  ⇒  tax / ETR = total_income
+                    implied_total = tax[y] / etr[y]
+                    self.assertAlmostEqual(
+                        implied_total,
+                        total_income,
+                        places=2,  # £0.01 tolerance
+                        msg=(
+                            f"Year {y}: tax={tax[y]:.2f}, ETR={etr[y]:.4%}, "
+                            f"implied_total={implied_total:.2f}, "
+                            f"actual_total={total_income:.2f}"
+                        ),
+                    )
+                elif total_income == 0:
+                    # No income → tax must be 0, ETR must be 0 (by
+                    # the engine's `else 0.0` branch).
+                    self.assertEqual(tax[y], 0.0)
+                    self.assertEqual(etr[y], 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

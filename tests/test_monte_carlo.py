@@ -133,6 +133,111 @@ class TestMonteCarloSameLengthPaths(unittest.TestCase):
         self.assertGreaterEqual(mc["success_rate"], 0.0)
         self.assertLessEqual(mc["success_rate"], 1.0)
 
+    def test_today_value_mode_deflates_each_path(self):
+        """Explicit today's-money output removes each path's sampled
+        cumulative inflation, while the default remains nominal."""
+        import copy
+
+        h = _minimal_household()
+        h.person1.retirement_age = 99
+        h.person1.dc_pot = 100_000.0
+        h.spending_target = 0.0
+        h_today = copy.deepcopy(h)
+        h_today.show_in_todays_value = True
+
+        np.random.seed(1234)
+        nominal = monte_carlo_simulation(h, runs=20, years=15)
+        np.random.seed(1234)
+        today = monte_carlo_simulation(
+            h_today, runs=20, years=15, today_value_mode=True
+        )
+
+        self.assertLess(
+            today["all_paths"][0][0],
+            nominal["all_paths"][0][0],
+        )
+        self.assertLess(
+            today["percentiles"]["p50"][-1],
+            nominal["percentiles"]["p50"][-1],
+        )
+        for band in ("p10", "p25", "p50", "p75", "p90"):
+            self.assertEqual(len(today["percentiles"][band]), 15)
+
+    def test_display_currency_does_not_change_success_rate(self):
+        """Success is a nominal cash-flow outcome, not a chart unit.
+
+        With identical random draws, requesting today's-money output may
+        change displayed percentile values but must not change which paths
+        ran out of money.
+        """
+        import copy
+
+        h = _minimal_household()
+        h.person1.dc_pot = 100_000.0
+        h.spending_target = 10_000.0
+        h_today = copy.deepcopy(h)
+
+        np.random.seed(9876)
+        nominal = monte_carlo_simulation(h, runs=40, years=20)
+        np.random.seed(9876)
+        today = monte_carlo_simulation(
+            h_today, runs=40, years=20, today_value_mode=True
+        )
+
+        self.assertEqual(nominal["success_rate"], today["success_rate"])
+        self.assertEqual(nominal["failure_years"], today["failure_years"])
+
+    def test_household_growth_means_affect_monte_carlo(self):
+        """MC keeps its stochastic spread but honours household means."""
+        import copy
+
+        low = _minimal_household()
+        low.person1.dc_pot = 100_000.0
+        high = copy.deepcopy(low)
+        high.person1.dc_growth_rate = 0.20
+
+        np.random.seed(2468)
+        low_result = monte_carlo_simulation(low, runs=20, years=10)
+        np.random.seed(2468)
+        high_result = monte_carlo_simulation(high, runs=20, years=10)
+
+        self.assertGreater(
+            high_result["percentiles"]["p50"][-1],
+            low_result["percentiles"]["p50"][-1],
+        )
+
+    def test_household_inflation_mean_affects_monte_carlo_spending(self):
+        """MC uses the household inflation assumption, not only its
+        module-level default, when constructing nominal spending paths."""
+        import copy
+
+        low = _minimal_household()
+        low.person1.age = 65.0
+        low.person1.retirement_age = 60.0
+        low.person2.age = 65.0
+        low.person2.retirement_age = 60.0
+        low.person1.dc_pot = 100_000.0
+        low.spending_target = 10_000.0
+        high = copy.deepcopy(low)
+        high.inflation_rate = 0.08
+
+        np.random.seed(1357)
+        low_result = monte_carlo_simulation(low, runs=20, years=10)
+        np.random.seed(1357)
+        high_result = monte_carlo_simulation(high, runs=20, years=10)
+
+        self.assertNotEqual(
+            low_result["all_paths"][0][-1],
+            high_result["all_paths"][0][-1],
+        )
+
+    def test_default_horizon_matches_household_joint_life_horizon(self):
+        """Omitting ``years`` uses the same horizon as run_simulation."""
+        h = _minimal_household()
+        h.life_expectancy_end_age = 70.0
+        result = monte_carlo_simulation(h, runs=2)
+        self.assertEqual(len(result["all_paths"][0]), 15)
+
     def test_return_dict_does_not_carry_lifetimes(self):
         # `lifetimes` used to be returned but was unused by both pages
         # and produced the variable-length bug. Pinning absence locks
