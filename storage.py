@@ -1,117 +1,77 @@
-"""JSON persistence helpers for `household_data`.
+"""In-memory plan store + JSON export/import for the hosted planner.
 
-Centralises reading and writing the household plan to disk so plans survive a
-browser refresh. Writes are atomic (write-then-rename) to avoid corrupting the
-file if the process is killed mid-save, and every successful save rotates the
-previous version to a `.bak` file so a bad save is one-deep recoverable.
+WHY NO LOCAL FILES
+==================
+The original implementation persisted the plan to `household_data.json`
+on local disk. That works for a single user running the app on their own
+machine, but on Streamlit Community Cloud it is broken in two ways:
+
+1. The container filesystem is EPHEMERAL — it is wiped whenever the app
+   sleeps, restarts, or redeploys, so "saved" plans silently disappear.
+2. It is SHARED — every visitor to the app hits the same container and
+   the same file, so one visitor's save overwrites another visitor's
+   plan (a privacy leak, not persistence).
+
+So the app now keeps each visitor's plan purely in their own Streamlit
+`session_state` (in-memory, isolated per browser tab), and exposes
+`plan_to_json` / `plan_from_json` so users can download and re-upload
+their plan themselves.
+
+The `save_household` / `has_saved_plan` names are retained as thin
+compatibility shims so the existing page call-sites keep working without
+a rename churn. `init_household` seeds the in-memory dict instead of
+reading a file. `load_household` / `delete_household` are gone entirely
+(they only touched disk and have no remaining callers).
 """
 from __future__ import annotations
 
 import json
-import os
-import tempfile
-from pathlib import Path
 from typing import Any, Dict
 
-# Files live next to `main.py` so they back up together with the rest of the
-# project and stay trivially gitignore-able.
-DEFAULT_PATH: Path = Path("household_data.json")
+# Key in `st.session_state` that holds the in-memory plan dict.
+STATE_KEY = "household_data"
 
 
-def _backup_path(path: Path) -> Path:
-    """Single canonical `.bak` location for a given plan path."""
-    return path.with_name(path.name + ".bak")
+def init_household(state: Dict[str, Any]) -> None:
+    """Seed the in-memory plan on the first access of a browser session.
 
-
-def load_household(path: Path = DEFAULT_PATH) -> Dict[str, Any]:
-    """Load household data from disk.
-
-    Falls back to `path + ".bak"` if the live file is missing or corrupt
-    (e.g. a crash happened between rotation and the new write). Returns an
-    empty dict if neither file exists or is readable. Never raises.
+    Streamlit reruns each page script on every interaction and preserves
+    `session_state` across page navigations within a single browser tab,
+    so we only initialise the dict once — after that the in-memory dict
+    is the source of truth for the session.
     """
-    for candidate in (path, _backup_path(path)):
-        if not candidate.exists():
-            continue
-        try:
-            with open(candidate, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            continue
-        if isinstance(data, dict):
-            return data
-    return {}
+    if STATE_KEY not in state:
+        state[STATE_KEY] = {}
 
 
-def save_household(data: Dict[str, Any], path: Path = DEFAULT_PATH) -> bool:
-    """Persist household data to disk atomically.
+def save_household(data: Dict[str, Any]) -> bool:
+    """Compatibility shim — always succeeds.
 
-    Before each successful save, the existing file (if any) is renamed to
-    `path + ".bak"`, giving a single-step undo. The new content is written
-    to a temp file and `os.replace`'d into place so the file is never
-    partially written. Returns True on success, False on any OS-level failure.
+    The plan already lives in `st.session_state.household_data`; every
+    page mutates that dict in place, so there is nothing extra to write.
+    Returns True so existing `if ok:` save-confirmation paths keep
+    working unchanged.
     """
-    backup_path = _backup_path(path)
-
-    try:
-        directory = path.parent or Path(".")
-        directory.mkdir(parents=True, exist_ok=True)
-
-        # Rotate the previous version. Best-effort: if rotation fails the
-        # new save still proceeds (and overwrites the existing main file).
-        if path.exists():
-            try:
-                os.replace(path, backup_path)
-            except OSError:
-                pass
-
-        fd, tmp_path = tempfile.mkstemp(
-            dir=str(directory), suffix=".json.tmp"
-        )
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, default=str)
-            os.replace(tmp_path, path)
-        except Exception:
-            # Best-effort cleanup of the half-written temp file.
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-            return False
-        return True
-    except OSError:
-        return False
+    return True
 
 
-def delete_household(path: Path = DEFAULT_PATH) -> bool:
-    """Remove the live plan and its `.bak` companion.
+def has_saved_plan(state: Dict[str, Any]) -> bool:
+    """True when the session already has a non-empty in-memory plan."""
+    return bool(state.get(STATE_KEY))
 
-    Returns True if neither file exists at the end (best-effort tolerates
-    per-file failures).
+
+def plan_to_json(data: Dict[str, Any]) -> str:
+    """Serialize the plan dict for the browser download button."""
+    return json.dumps(data, indent=2, default=str)
+
+
+def plan_from_json(text: str) -> Dict[str, Any]:
+    """Parse an uploaded plan JSON string into a dict.
+
+    Raises ValueError on malformed JSON or a non-dict payload so the
+    page can surface an error instead of corrupting `session_state`.
     """
-    cleaned = True
-    for victim in (path, _backup_path(path)):
-        try:
-            if victim.exists():
-                os.remove(victim)
-        except OSError:
-            cleaned = False
-    return cleaned
-
-
-def init_household(state: Dict[str, Any], path: Path = DEFAULT_PATH) -> None:
-    """Seed `state['household_data']` from disk the first time it's read.
-
-    Streamlit reruns each page script on every interaction, and `session_state`
-    is preserved across page navigations within a single browser tab. So we
-    only want to load from disk on the very first access of the session —
-    after that, the in-memory dict is the source of truth.
-    """
-    if "household_data" not in state:
-        state["household_data"] = load_household(path)
-
-
-def has_saved_plan(path: Path = DEFAULT_PATH) -> bool:
-    """True if a saved plan exists on disk (used for UI status indicators)."""
-    return path.exists() and path.stat().st_size > 0
+    data = json.loads(text)
+    if not isinstance(data, dict):
+        raise ValueError("Uploaded file is not a valid plan object.")
+    return data

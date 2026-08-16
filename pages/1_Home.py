@@ -27,9 +27,9 @@ from simulation.years_and_months import (
 )
 from storage import (
     init_household,
-    save_household,
-    delete_household,
     has_saved_plan,
+    plan_to_json,
+    plan_from_json,
 )
 from pages_helpers.view_badge import render_view_mode_badge
 from pages_helpers.household_builder import build_household_from_session_state
@@ -47,36 +47,79 @@ st.write("This page shows your retirement simulation results based on the data e
 # and the other 12 pages — see `brand_chrome.py` for the rationale.
 apply_chrome()
 
-# Seed from disk on first script run.
+# Seed the in-memory plan on first script run (no disk read).
 init_household(st.session_state)
 
+
+def _load_uploaded_plan():
+    """One-shot handler for the plan file_uploader.
+
+    Fires only when a NEW file is uploaded (Streamlit calls `on_change`
+    on value change, not on every rerun), so it can safely overwrite
+    `session_state.household_data` without clobbering later edits on
+    unrelated reruns. Errors are stashed in session_state for the page
+    body to render once.
+    """
+    uploaded = st.session_state.get("plan_uploader")
+    if uploaded is None:
+        return
+    try:
+        raw = uploaded.getvalue().decode("utf-8")
+        st.session_state.household_data = plan_from_json(raw)
+        st.session_state.simulation_results = None
+        st.session_state["_plan_upload_error"] = None
+        st.session_state["_plan_uploaded"] = True
+    except (ValueError, UnicodeDecodeError) as exc:
+        st.session_state["_plan_upload_error"] = str(exc)
+        st.session_state["_plan_uploaded"] = False
+
+
 # -------------------------
-# Persistence toolbar
+# Persistence toolbar — in-memory only, with JSON export/import so
+# the user can keep their own copy (no local files on the host).
 # -------------------------
-col_status, col_save, col_reset = st.columns([2, 1, 1])
+col_status, col_download, col_upload, col_reset = st.columns([2, 1, 1, 1])
 
 with col_status:
-    if has_saved_plan():
-        st.caption("💾 Plan is persisted to disk — a refresh will keep your inputs.")
+    if has_saved_plan(st.session_state):
+        st.caption(
+            "💾 Plan is held in this browser session (in-memory). "
+            "Download it to keep a personal copy."
+        )
     else:
-        st.caption("⚠️ Plan is not yet saved to disk.")
+        st.caption("ℹ️ No plan yet — enter your details, then download to keep a copy.")
 
-with col_save:
-    if st.button("💾 Save Plan", key="save_plan"):
-        ok = save_household(st.session_state.get("household_data", {}))
-        if ok:
-            st.success("Plan saved.")
-        else:
-            st.error("Could not write to disk. Check folder permissions.")
+with col_download:
+    st.download_button(
+        "⬇️ Download plan",
+        data=plan_to_json(st.session_state.get("household_data", {})),
+        file_name="couples_retirement_plan.json",
+        mime="application/json",
+        key="download_plan",
+        help="Save your plan as a JSON file you can re-upload later.",
+    )
+
+with col_upload:
+    st.file_uploader(
+        "Upload plan",
+        type=["json"],
+        key="plan_uploader",
+        on_change=_load_uploaded_plan,
+        label_visibility="collapsed",
+        help="Restore a plan from a previously downloaded JSON file.",
+    )
+    if st.session_state.get("_plan_upload_error"):
+        st.error(f"Couldn't load plan: {st.session_state['_plan_upload_error']}")
+        st.session_state.pop("_plan_upload_error", None)
+    if st.session_state.get("_plan_uploaded"):
+        st.success("Plan loaded.")
+        st.session_state.pop("_plan_uploaded", None)
 
 with col_reset:
     if st.button("🗑️ Reset Plan", key="reset_plan"):
         st.session_state.household_data = {}
         st.session_state.simulation_results = None
-        # Wipes both the live file and its `.bak` rotation. copy the .bak back
-        # to the live file by hand if you need to undo a Reset.
-        delete_household()
-        st.warning("Plan reset — both in memory and on disk.")
+        st.warning("Plan cleared from this browser session.")
 
 # -------------------------
 # Validate required data

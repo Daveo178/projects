@@ -9,9 +9,11 @@ Three things happen here, in order:
    palette propagates uniformly across all 13 pages (the
    pre-helper state of main.py-only injection meant non-main pages
    rendered without the brand palette). See `brand_chrome.py`.
-3. `init_household(...)` — seeds session_state from disk on the first
-   visit of a browser tab so any plan saved in a previous session is
-   preserved across refreshes.
+3. `init_household(...)` — seeds the in-memory plan dict on the first
+   visit of a browser tab. Plans live in per-visitor `session_state`
+   (no local files), so the app is safe to host on Streamlit
+   Community Cloud; use the Home page's Download/Upload buttons to
+   keep a personal copy.
 """
 
 import streamlit as st
@@ -34,8 +36,8 @@ st.set_page_config(
 apply_chrome()
 
 
-# Initialise session state — load from disk on first visit of a browser tab
-# so any plan saved in a previous refresh is preserved.
+# Initialise session state — seed the in-memory plan on first visit of a
+# browser tab (no disk read; the plan lives only in this session).
 init_household(st.session_state)
 
 # Global sidebar controls — inflation slider shared across ALL
@@ -48,15 +50,14 @@ if "simulation_results" not in st.session_state:
 st.title("Couples' Retirement Planner")
 st.write("Use the sidebar to navigate through your retirement planning dashboard.")
 
-# A tiny status hint so the user knows persistence is active.
-if has_saved_plan():
+# A tiny status hint so the user knows how their plan is held.
+if has_saved_plan(st.session_state):
     st.caption(
-        "💾 A saved plan is loaded from disk. Note: data is stored as "
-        "plaintext `household_data.json` in this folder — keep the "
-        "folder local."
+        "💾 Your plan is held in this browser session (in-memory). "
+        "Use the Home page's Download button to keep a personal copy."
     )
 else:
     st.caption(
-        "ℹ️ No saved plan yet — your inputs are saved when you click a "
-        "Save button. Tip: open in one tab at a time (last save wins)."
+        "ℹ️ No plan yet — your inputs live in this browser session and "
+        "can be downloaded from the Home page."
     )

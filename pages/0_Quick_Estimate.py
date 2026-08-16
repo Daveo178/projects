@@ -1769,8 +1769,8 @@ with st.expander(
                 key="qe_apply_sustainable",
                 help=(
                     "Updates Annual household spending above AND "
-                    "saves to disk. Hit Run Quick Estimate to "
-                    "refresh the chart with the new spending."
+                    "keeps it in this session. Hit Run Quick Estimate "
+                    "to refresh the chart with the new spending."
                 ),
             ):
                 _new_spending = float(_last_result.max_spending_gbp)
@@ -1804,7 +1804,7 @@ with st.expander(
                 st.success(
                     f"Annual spending set to "
                     f"£{_last_result.max_spending_gbp:,.0f} "
-                    f"and saved — hit **Run Quick Estimate** "
+                    f"and applied — hit **Run Quick Estimate** "
                     f"to refresh the chart."
                 )
                 st.rerun()
@@ -1823,7 +1823,7 @@ _run_clicked = st.button(
     type="primary",
     use_container_width=True,
     key="qe_run",
-    help="Saves your inputs to disk and runs the simulation in today's money.",
+    help="Runs the simulation in today's money and keeps your inputs in this session.",
 )
 
 if _run_clicked:
@@ -1839,7 +1839,7 @@ if _run_clicked:
     # after the user runs this page.
     data["show_in_todays_value"] = True
     save_household(data)
-    st.success("Plan saved — running simulation in today's money…")
+    st.success("Plan ready — running simulation in today's money…")
 
     # Run the simulation in today's-value mode. The flag is
     # forced to True via the helper kwarg so any prior drift in
@@ -2185,15 +2185,13 @@ else:
 # "first visit?" indicator. Mirrors `main.py`'s caption but
 # tuned for the Quick Estimate page context.
 # -----------------------------------------------------------
-if has_saved_plan():
+if has_saved_plan(st.session_state):
     st.caption(
-        "💾 A saved plan is loaded from disk — your inputs are "
-        "persisted across browser refreshes. Plaintext "
-        "`household_data.json` in this folder; keep local."
+        "💾 Your plan is held in this browser session (in-memory) — "
+        "download it from the Home page to keep a personal copy."
     )
 else:
     st.caption(
-        "ℹ️ No saved plan yet — your inputs save automatically when "
-        "you click **Run Quick Estimate**. Tip: open in one tab at "
-        "a time (last save wins)."
+        "ℹ️ No plan yet — your inputs live in this browser session "
+        "and can be downloaded from the Home page."
     )

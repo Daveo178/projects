@@ -427,8 +427,8 @@ with st.expander(
         key="calc_sustainable",
         help=(
             "Bisects on terminal net worth — ~1 second typical "
-            "(18-25 iterations). Does NOT save to disk; click "
-            "'Apply as my annual spending' below to commit."
+            "(18-25 iterations). Stashes the result in this session "
+            "only; click 'Apply as my annual spending' below to commit."
         ),
     )
     if _calc_clicked:
@@ -505,9 +505,9 @@ with st.expander(
                 help=(
                     "Updates the annual spending target (used "
                     "everywhere — including the Quick Estimate chart) "
-                    "AND saves the plan to disk. Use the regular Save "
-                    "Spending button instead if you only want to "
-                    "compare values without committing."
+                    "AND applies it across the whole session. Use the "
+                    "regular Save Spending button instead if you only "
+                    "want to compare values without committing."
                 ),
             ):
                 st.session_state.household_data["spending"] = float(
