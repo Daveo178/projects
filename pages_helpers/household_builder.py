@@ -87,6 +87,8 @@ def build_household_from_session_state(
         * `"events"`  — `[]` if missing
         * `"drawdown_strategy"` — `"Fixed"` if missing
         * `"cash_buffer"` — `False` if missing (the dataclass default)
+        * `"single_retiree"` — `False` if missing; when true, all
+          Person 2 inputs are retained but excluded from the model
         * `"life_expectancy_end_age"` — `95.0` if missing
         * `"show_in_todays_value"` — `False` if missing (only used
           when the `show_in_todays_value` parameter is `None`)
@@ -130,6 +132,7 @@ def build_household_from_session_state(
         ),
         events=events,
         cash_buffer=bool(d.get("cash_buffer", False)),
+        single_retiree=bool(d.get("single_retiree", False)),
         taper_start_age=float(d.get("taper_start_age", 75.0)),
         taper_rate=float(d.get("taper_rate", 0.02)),
         taper_floor_gbp=float(d.get("taper_floor_gbp", 10_000.0)),

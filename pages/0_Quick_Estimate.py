@@ -11,7 +11,7 @@ landing page** that gives the Aviva-style simplicity, while the existing
 13-page planner stays as the detailed alternative.
 
 Result: this file. It's the default landing for new users in Simple
-mode. Couple-supported (Person 1 AND Person 2), today's-money only by design,
+mode. Supports either one retiree or a couple, today's-money only by design,
 single bar chart output, with a single primary CTA:
 
     Run Quick Estimate
@@ -39,8 +39,7 @@ DESIGN DECISIONS
    slider — they're just hidden behind a mode flip.
 
 3. **One chart only**: a stacked-bar chart of household asset
-   composition at milestone ages (today, Person 1 retires, Person 1
-   State Pension age, Person 2 State Pension age, plan-end age). The
+   composition at milestone ages (today, Person 1 retires, Person 1    State Pension age, optional Person 2 State Pension age, plan-end age). The
    `simulation/charts.py::net_worth_composition_chart` helper gives
    us per-class series, so we just melt them and stack them on
    milestone ages. Mortgage balance overlaid as a separate line.
@@ -165,8 +164,33 @@ data.setdefault("spending", 0)
 data.setdefault("end_age", 95.0)
 data.setdefault("drawdown_strategy", "Fixed")
 data.setdefault("cash_buffer", False)
+data.setdefault("single_retiree", False)
 data.setdefault("life_expectancy_end_age", 95.0)
 data.setdefault("inflation_rate", 0.025)
+
+# A single-retiree plan keeps any Person 2 inputs in the saved plan so
+# switching back to a couple is lossless, but the simulation layer treats
+# Person 2 as inactive while this toggle is on. This is deliberately set
+# before the partner widgets so the user's choice is part of the same
+# household state written by Run Quick Estimate.
+single_retiree = st.toggle(
+    "Plan for one retiree (ignore Person 2)",
+    value=bool(data.get("single_retiree", False)),
+    key="qe_single_retiree",
+    help=(
+        "When enabled, Person 2's entered wages, contributions, DC pot, "
+        "DB pension, and State Pension are all excluded from the "
+        "projection. Person 2's saved inputs are retained so you can "
+        "switch back to a couple later."
+    ),
+)
+data["single_retiree"] = bool(single_retiree)
+if single_retiree:
+    st.info(
+        "Single-retiree mode is on. Person 2's saved inputs are retained "
+        "but ignored, including any State Pension that would otherwise "
+        "start at Person 2's State Pension age."
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -177,7 +201,7 @@ data.setdefault("inflation_rate", 0.025)
 
 
 # -----------------------------------------------------------
-# Section 1 — Person 1 and Person 2. ONE row per partner.
+# Section 1 — Person 1 and optional Person 2. ONE row per partner.
 # -----------------------------------------------------------
 # Two columns side-by-side, each a partner card. Compact: 5 base
 # fields per partner (age, retirement age, state pension age, DC

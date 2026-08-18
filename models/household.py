@@ -43,6 +43,12 @@ class Household:
     # for the implementation.
     cash_buffer: bool = False
 
+    # When True, this is a single-retiree plan. Person 2's persisted
+    # inputs remain available for a future switch back to a couple, but
+    # the simulation must not use any of them (including State Pension,
+    # DC pension, DB pension, wages, contributions, tax, or horizon).
+    single_retiree: bool = False
+
     # Tapered (down with age) spending strategy params. Defaults
     # reflect a typical "go-go → slow-go" late-life curve: real
     # spending declines 2%/yr starting at age 75, with a £10,000/yr
@@ -82,8 +88,9 @@ class Household:
     # 95 is roughly the upper-end (≈p10 mortality scenario) for a
     # 65-year-old UK couple today and matches the existing 45-year
     # default when both partners start at 55. The engine computes
-    # `run_simulation` years from `max(end_age - p1.age, end_age -
-    # p2.age)` so the plan funds BOTH partners to the target age.
+    # `run_simulation` years from the active person(s): in couple mode
+    # `max(end_age - p1.age, end_age - p2.age)` funds both partners;
+    # single-retiree mode uses Person 1 only.
     # Floor at 5 years inside the engine protects against the
     # both-already-past-target corner case. Page 2 exposes this as
     # a `years_and_months_input` widget so users can also enter

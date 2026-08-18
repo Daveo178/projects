@@ -85,13 +85,10 @@ def _resolve_horizon(household, years):
     end_age = float(getattr(household, "life_expectancy_end_age", 95.0))
     p1_age = float(getattr(household.person1, "age", 55.0))
     p2_age = float(getattr(household.person2, "age", 55.0))
-    return max(
-        5,
-        max(
-            int(round(end_age - p1_age)),
-            int(round(end_age - p2_age)),
-        ),
-    )
+    remaining_years = [int(round(end_age - p1_age))]
+    if not bool(getattr(household, "single_retiree", False)):
+        remaining_years.append(int(round(end_age - p2_age)))
+    return max(5, max(remaining_years))
 
 
 def monte_carlo_simulation(

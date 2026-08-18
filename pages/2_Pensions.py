@@ -187,7 +187,15 @@ def _render_growth_block(name: str, person: dict, prefix: str) -> dict:
 # 2. Per-partner growth blocks
 # ----------------------------------------
 d_rates = _render_growth_block("Person 1", p1, "d")
-s_rates = _render_growth_block("Person 2", p2, "s")
+if bool(data.get("single_retiree", False)):
+    st.info(
+        "Single-retiree mode is active. Person 2's pension assumptions "
+        "are retained but excluded from the projection, including State "
+        "Pension."
+    )
+    s_rates = {}
+else:
+    s_rates = _render_growth_block("Person 2", p2, "s")
 
 # ----------------------------------------
 # 3. Save — merges ONLY the four growth rates per partner so every
@@ -195,6 +203,7 @@ s_rates = _render_growth_block("Person 2", p2, "s")
 # ----------------------------------------
 if st.button("Save Growth Assumptions"):
     data["person1"] = {**p1, **d_rates}
-    data["person2"] = {**p2, **s_rates}
+    if s_rates:
+        data["person2"] = {**p2, **s_rates}
     save_household(data)
     st.success("Growth assumptions saved!")

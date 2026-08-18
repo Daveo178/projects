@@ -132,7 +132,8 @@ def _draw_pension_for_amount(
         household.person1.pcls_available
         - household.person1.pcls_taken
     )
-    p2_remaining = (
+    single_retiree = bool(getattr(household, "single_retiree", False))
+    p2_remaining = 0.0 if single_retiree else (
         household.person2.pcls_available
         - household.person2.pcls_taken
     )
@@ -154,9 +155,9 @@ def _draw_pension_for_amount(
     #   (a) reduced the post-tax income line on phantom draws,
     #   (b) created the double-PA illusion biasing the line UP
     #       once total_dc hit zero.
-    total_dc_at_start = (
-        household.person1.dc_pot + household.person2.dc_pot
-    )
+    total_dc_at_start = household.person1.dc_pot
+    if not single_retiree:
+        total_dc_at_start += household.person2.dc_pot
     actual_ufpls = min(ufpls_requested, total_dc_at_start)
 
     # Pro-rate PCLS / taxable onto the cap so the 25%-PCLS
@@ -179,9 +180,14 @@ def _draw_pension_for_amount(
     # UFPLS. Zero shares when there is nothing to draw from.
     if total_dc_at_start > 0 and actual_ufpls > 0:
         p1_share = household.person1.dc_pot / total_dc_at_start
-        p2_share = household.person2.dc_pot / total_dc_at_start
+        p2_share = (
+            0.0
+            if single_retiree
+            else household.person2.dc_pot / total_dc_at_start
+        )
         household.person1.dc_pot -= actual_ufpls * p1_share
-        household.person2.dc_pot -= actual_ufpls * p2_share
+        if not single_retiree:
+            household.person2.dc_pot -= actual_ufpls * p2_share
         p1_taxable_taken = taxable_draw * p1_share
         p2_taxable_taken = taxable_draw * p2_share
     else:
@@ -197,9 +203,10 @@ def _draw_pension_for_amount(
             household.person1.pcls_taken += tax_free_draw
         else:
             household.person1.pcls_taken += max(0, p1_remaining)
-            household.person2.pcls_taken += max(
-                0, tax_free_draw - p1_remaining
-            )
+            if not single_retiree:
+                household.person2.pcls_taken += max(
+                    0, tax_free_draw - p1_remaining
+                )
 
     # ----- Tax recompute with ACTUAL UFPLS draw ---------------
     new_p1_tax = uk_income_tax(

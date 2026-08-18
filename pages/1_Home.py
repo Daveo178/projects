@@ -210,10 +210,13 @@ if "simulation_results" in st.session_state and st.session_state.simulation_resu
     _p1_ret_f = float(_p1_block.get("retirement_age", _p1_age_f))
     _p2_age_f = float(_p2_block.get("age", 55.0))
     _p2_ret_f = float(_p2_block.get("retirement_age", _p2_age_f))
-    _years_to_ret = max(
-        0.0,
-        min(_p1_ret_f - _p1_age_f, _p2_ret_f - _p2_age_f),
-    )
+    if bool(data.get("single_retiree", False)):
+        _years_to_ret = max(0.0, _p1_ret_f - _p1_age_f)
+    else:
+        _years_to_ret = max(
+            0.0,
+            min(_p1_ret_f - _p1_age_f, _p2_ret_f - _p2_age_f),
+        )
 
     col_nw, col_peak, col_years, col_sus = st.columns(4)
     with col_nw:
@@ -230,7 +233,7 @@ if "simulation_results" in st.session_state and st.session_state.simulation_resu
         )
     with col_years:
         st.metric(
-            "First partner retires in",
+            "Retirement starts in",
             f"{_years_to_ret:g} yrs" if _years_to_ret > 0 else "Already retired",
             delta=None,
         )
@@ -289,7 +292,11 @@ if "simulation_results" in st.session_state and st.session_state.simulation_resu
     _mortgage_block = data.get("mortgage", {})
     _has_mortgage = float(_mortgage_block.get("outstanding", 0)) > 0
     _cash_buffer_enabled = bool(data.get("cash_buffer", False))
-    _either_pre_retirement = (_p1_age < _p1_ret) or (_p2_age < _p2_ret)
+    _either_pre_retirement = (
+        _p1_age < _p1_ret
+        if bool(data.get("single_retiree", False))
+        else (_p1_age < _p1_ret) or (_p2_age < _p2_ret)
+    )
 
     if (
         not _cash_buffer_enabled

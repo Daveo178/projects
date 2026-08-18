@@ -241,7 +241,11 @@ def find_max_sustainable_spending(
     # `run_simulation(household)` endpoint is its final index, one lower.
     p1_age = float(getattr(household.person1, "age", 55.0))
     p2_age = float(getattr(household.person2, "age", 55.0))
-    min_age = min(p1_age, p2_age)
+    min_age = (
+        p1_age
+        if bool(getattr(household, "single_retiree", False))
+        else min(p1_age, p2_age)
+    )
     target_year_offset = int(round(float(target_age) - min_age))
 
     base_strategy = str(getattr(household, "drawdown_strategy", "Fixed"))

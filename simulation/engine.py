@@ -214,19 +214,19 @@ def run_simulation(household, years=None):
     # `life_expectancy_end_age` so the saved plan's horizon
     # propagates everywhere (Page 1 Home, Page 6 Scenarios, Page 8
     # Monte Carlo) without each caller having to perform the same
-    # `max(end_age - p1.age, end_age - p2.age)` math. Page 13 What
-    # If can still pass an explicit `years=N` to test alternative
-    # horizons without mutating the household.
+    # remaining-life math. In single-retiree mode Person 2 is not an
+    # active life and therefore cannot extend the horizon.
+    single_retiree = bool(getattr(household, "single_retiree", False))
     if years is None:
         end_age = float(
             getattr(household, "life_expectancy_end_age", 95.0)
         )
         p1_age = float(getattr(household.person1, "age", 55.0))
         p2_age = float(getattr(household.person2, "age", 55.0))
-        years = max(
-            int(round(end_age - p1_age)),
-            int(round(end_age - p2_age)),
-        )
+        remaining_years = [int(round(end_age - p1_age))]
+        if not single_retiree:
+            remaining_years.append(int(round(end_age - p2_age)))
+        years = max(remaining_years)
         years = max(5, years)
 
     # ---- "Show in today's value" — effective-rate resolution ----
@@ -416,27 +416,36 @@ def run_simulation(household, years=None):
             p1_gross += p1_db_income_year
             pension_income += p1_db_income_year
 
-        # Person 2 — same per-spouse accounting as Person 1 above.
+        # Person 2 — same accounting as Person 1 in couple mode. In
+        # single-retiree mode every Person 2 income source is explicitly
+        # zeroed, including State Pension; this is stronger than relying
+        # on a sentinel retirement/state-pension age and prevents stale or
+        # manually entered Person 2 data from leaking into the projection.
         p2_db_income_year = 0.0
-        p2_earned_this_year = _indexed_earned_income(
-            household.person2, year, growth_rate_override=p2_inc_eff
-        )
-        p2_sp_year = state_pension_income(
-            household.person2, year, growth_rate_override=p2_sp_eff
-        )
-        pension_income += p2_sp_year
-        p2_gross = p2_earned_this_year + p2_sp_year
-        if household.person2.is_db_active(year):
-            p2_db_years_active = max(
-                0,
-                (household.person2.age + year) - household.person2.draw_age,
+        if single_retiree:
+            p2_earned_this_year = 0.0
+            p2_sp_year = 0.0
+            p2_gross = 0.0
+        else:
+            p2_earned_this_year = _indexed_earned_income(
+                household.person2, year, growth_rate_override=p2_inc_eff
             )
-            p2_db_income_year = (
-                household.person2.db_income
-                * (1 + p2_db_eff) ** p2_db_years_active
+            p2_sp_year = state_pension_income(
+                household.person2, year, growth_rate_override=p2_sp_eff
             )
-            p2_gross += p2_db_income_year
-            pension_income += p2_db_income_year
+            pension_income += p2_sp_year
+            p2_gross = p2_earned_this_year + p2_sp_year
+            if household.person2.is_db_active(year):
+                p2_db_years_active = max(
+                    0,
+                    (household.person2.age + year) - household.person2.draw_age,
+                )
+                p2_db_income_year = (
+                    household.person2.db_income
+                    * (1 + p2_db_eff) ** p2_db_years_active
+                )
+                p2_gross += p2_db_income_year
+                pension_income += p2_db_income_year
 
         # UK taxes spouses separately on their own income — each partner
         # gets their own £12,570 PA and their own £100k taper. Sum the two
@@ -472,7 +481,11 @@ def run_simulation(household, years=None):
                 household.person1.dc_pot * (household.person1.pcls_percent / 100)
             )
 
-        if household.person2.is_retired(year) and household.person2.pcls_available == 0:
+        if (
+            not single_retiree
+            and household.person2.is_retired(year)
+            and household.person2.pcls_available == 0
+        ):
             household.person2.pcls_available = (
                 household.person2.dc_pot * (household.person2.pcls_percent / 100)
             )
@@ -518,7 +531,11 @@ def run_simulation(household, years=None):
         #    year remains" pattern.
         # -------------------------
         p1_M = _monthly_dc_contrib(household.person1, p1_earned_this_year)
-        p2_M = _monthly_dc_contrib(household.person2, p2_earned_this_year)
+        p2_M = (
+            0.0
+            if single_retiree
+            else _monthly_dc_contrib(household.person2, p2_earned_this_year)
+        )
 
         p1_retirement_offset = (
             household.person1.retirement_age - household.person1.age
@@ -561,19 +578,23 @@ def run_simulation(household, years=None):
             p1_M_for_year,
             fraction=p1_fraction,
         )
-        household.person2.dc_pot = _dc_monthly_compound(
-            household.person2.dc_pot,
-            p2_dc_eff,
-            p2_M_for_year,
-            fraction=p2_fraction,
-        )
+        if not single_retiree:
+            household.person2.dc_pot = _dc_monthly_compound(
+                household.person2.dc_pot,
+                p2_dc_eff,
+                p2_M_for_year,
+                fraction=p2_fraction,
+            )
 
         # -------------------------
         # 2b. Asset contributions — keep paying into ISA/GIA/Cash while
         # at least one person is still working. Stop once both partners
         # have retired (joint household convention).
         # -------------------------
-        if not (household.person1.is_retired(year) and household.person2.is_retired(year)):
+        household_retired = household.person1.is_retired(year)
+        if not single_retiree:
+            household_retired = household_retired and household.person2.is_retired(year)
+        if not household_retired:
             for asset in household.assets:
                 if asset.contribution_until_retirement > 0:
                     asset.value += asset.contribution_until_retirement
@@ -852,11 +873,9 @@ def run_simulation(household, years=None):
             spending = max(spending, taper_floor)
 
         elif strategy == "Safe Withdrawal (4%)":
-            total_assets = (
-                sum(a.value for a in household.assets)
-                + household.person1.dc_pot
-                + household.person2.dc_pot
-            )
+            total_assets = sum(a.value for a in household.assets) + household.person1.dc_pot
+            if not single_retiree:
+                total_assets += household.person2.dc_pot
             spending = total_assets * 0.04
 
         else:
@@ -944,10 +963,9 @@ def run_simulation(household, years=None):
         total_need = spending + (
             0.0 if mortgage_in_spending else mortgage_paid
         )
-        any_retired = (
-            household.person1.is_retired(year)
-            or household.person2.is_retired(year)
-        )
+        any_retired = household.person1.is_retired(year)
+        if not single_retiree:
+            any_retired = any_retired or household.person2.is_retired(year)
         # `Household.cash_buffer` is opt-in (defaults to False). The
         # `getattr(..., False)` defensive read means older saved
         # household_data.json files without the key construct
@@ -1318,11 +1336,9 @@ def run_simulation(household, years=None):
         # -------------------------
         # 8. Net Worth
         # -------------------------
-        net_worth = (
-            sum(a.value for a in household.assets)
-            + household.person1.dc_pot
-            + household.person2.dc_pot
-        )
+        net_worth = sum(a.value for a in household.assets) + household.person1.dc_pot
+        if not single_retiree:
+            net_worth += household.person2.dc_pot
 
         if household.mortgage:
             net_worth -= household.mortgage.outstanding
@@ -1352,9 +1368,10 @@ def run_simulation(household, years=None):
 
         results["mortgage_payment"].append(mortgage_paid)
 
-        results["dc_pot"].append(
-            household.person1.dc_pot + household.person2.dc_pot
-        )
+        total_dc_pot = household.person1.dc_pot
+        if not single_retiree:
+            total_dc_pot += household.person2.dc_pot
+        results["dc_pot"].append(total_dc_pot)
 
         results["pension_income"].append(pension_income)
         results["earned_income"].append(p1_earned_this_year + p2_earned_this_year)

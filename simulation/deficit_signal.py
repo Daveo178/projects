@@ -387,13 +387,18 @@ def compute_pre_retirement_deficit_signal(
         return None
 
     # Pre-retirement horizon length — number of FULL years before
-    # EITHER partner is past retirement. If any partner is already
-    # retired at year 0, the horizon is zero — no deficit signal
-    # makes sense (and the engine's drawdown gate is already open).
-    years_to_ret = (
-        min(p1.get("retirement_age", 60.0) - p1.get("age", 55.0),
-            p2.get("retirement_age", 60.0) - p2.get("age", 55.0))
-    )
+    # the active household reaches retirement. In single-retiree mode
+    # Person 2's retirement date is irrelevant, just as it is in the
+    # engine; otherwise the first partner to retire opens drawdown.
+    single_retiree = bool(data.get("single_retiree", False))
+    p1_years_to_ret = p1.get("retirement_age", 60.0) - p1.get("age", 55.0)
+    if single_retiree:
+        years_to_ret = p1_years_to_ret
+    else:
+        years_to_ret = min(
+            p1_years_to_ret,
+            p2.get("retirement_age", 60.0) - p2.get("age", 55.0),
+        )
     if years_to_ret <= 0:
         return None
     horizon = int(min(years_to_ret, years))  # truncate fractional
@@ -498,22 +503,25 @@ def compute_pre_retirement_deficit_signal(
                 inflation_rate=data_inflation_rate,
                 today_value_mode=today_value_data_mode,
             )
-            + _dict_person_earned(
-                p2, y,
-                inflation_rate=data_inflation_rate,
-                today_value_mode=today_value_data_mode,
-            )
             + _dict_partner_pension_income(
                 p1, y,
                 inflation_rate=data_inflation_rate,
                 today_value_mode=today_value_data_mode,
             )
-            + _dict_partner_pension_income(
-                p2, y,
-                inflation_rate=data_inflation_rate,
-                today_value_mode=today_value_data_mode,
-            )
         )
+        if not single_retiree:
+            income_year += (
+                _dict_person_earned(
+                    p2, y,
+                    inflation_rate=data_inflation_rate,
+                    today_value_mode=today_value_data_mode,
+                )
+                + _dict_partner_pension_income(
+                    p2, y,
+                    inflation_rate=data_inflation_rate,
+                    today_value_mode=today_value_data_mode,
+                )
+            )
         deficit = need - income_year
         if deficit > 0:
             cumulative_deficit += deficit
