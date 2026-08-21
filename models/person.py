@@ -190,6 +190,22 @@ class Person:
     # personal contribution stands alone").
     employer_contrib_pct: float = 0.0
 
+    # Monte Carlo per-year growth paths. When NON-EMPTY, the engine
+    # uses `path[year]` (mapped through the today's-value transform)
+    # instead of the scalar `*_growth_rate` field for that year's
+    # calculation. This is what lets the Monte Carlo sampler give each
+    # simulation year its own market return / indexation rate instead of
+    # holding one rate fixed for the whole run. Deterministic runs and
+    # legacy saved plans never set these (they default to empty lists),
+    # so the scalar fields remain authoritative there — byte-for-byte
+    # identical behaviour. The paths are simulation-internal: they are
+    # attached to the dataclass instance by the MC sampler and are never
+    # serialised into saved plans (which round-trip through the
+    # `household_data` dict, not these instance attributes).
+    dc_growth_path: List[float] = field(default_factory=list)
+    db_growth_path: List[float] = field(default_factory=list)
+    state_pension_growth_path: List[float] = field(default_factory=list)
+
     life_events: List[Union[LifeEvent, dict]] = field(default_factory=list)
 
     # Date-of-birth + retirement date (ISO strings like "1970-03-15").

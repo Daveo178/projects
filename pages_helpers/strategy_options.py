@@ -7,6 +7,7 @@ DRAW_DOWN_STRATEGIES = (
     "Fixed",
     "Inflation-adjusted",
     "Tapered (down with age)",
+    "Spending phases",
     "Safe Withdrawal (4%)",
 )
 

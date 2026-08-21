@@ -12,6 +12,11 @@ class Household:
     assets: List[Asset] = field(default_factory=list)
     mortgage: Mortgage = None
     spending_target: float = 0.0
+    # Explicit age-based spending phases. Each item is a dict with
+    # `annual_spending` and `until_age`, expressed in today's money.
+    # The engine uses the first phase whose age threshold has not been
+    # passed, then continues using the final phase after the last threshold.
+    spending_phases: List[dict] = field(default_factory=list)
     drawdown_amount: float = 0.0
     drawdown_strategy: str = "Fixed"
 

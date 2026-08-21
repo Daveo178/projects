@@ -42,7 +42,7 @@ import streamlit as st
 # =========================================================
 _LIGHT_CSS_BODY = r"""
 /* ============================================================
-   LIGHT theme — "Couples' Retirement Planner"
+   LIGHT theme — "Retirement Planner"
    Palette: forest-teal (trust + longevity) + warm amber accent.
    Typography: system stack (no CDN dependency, instant render).
    ============================================================ */

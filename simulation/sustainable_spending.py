@@ -80,6 +80,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .engine import run_simulation
+from .spending import normalize_spending_phases
 
 
 # Solver constants — module-level so the Spending page caption and
@@ -165,15 +166,14 @@ class SustainableSpendingResult:
                                 renders these with `st.error(...)` and
                                 suppresses the result panel entirely.
 
-    `strategy_at_run`         : Echoes `household.drawdown_strategy`
-                                so the Spending page can show "your
-                                Fixed plan" / "your Tapered plan" in
-                                the result message — Fixed and Tapered
-                                strategies produce very different
-                                max-spending figures for the same
-                                household (~10-15% higher for Fixed
-                                on typical UK wealth), and the user
-                                needs to see which strategy was run.
+    `strategy_at_run`         : Echoes `household.drawdown_strategy` so
+                                the caller can describe which plan was
+                                solved.
+
+    `spending_phases`         : For the explicit "Spending phases"
+                                strategy, the sustainable phase schedule
+                                with the original age thresholds and
+                                proportionally scaled amounts.
     """
     max_spending_gbp: float
     terminal_net_worth_gbp: float
@@ -183,6 +183,7 @@ class SustainableSpendingResult:
     converged: bool
     error: Optional[str] = None
     strategy_at_run: str = ""
+    spending_phases: Optional[list[dict[str, float]]] = None
 
 
 def find_max_sustainable_spending(
@@ -250,6 +251,46 @@ def find_max_sustainable_spending(
 
     base_strategy = str(getattr(household, "drawdown_strategy", "Fixed"))
 
+    # Explicit phase plans are solved by scaling the first active amount and
+    # preserving the ratios and age thresholds of the entered schedule. For
+    # example, [£40k, £30k, £20k] becomes [S, .75S, .5S].
+    phase_schedule = None
+    phase_mode = base_strategy == "Spending phases"
+    if phase_mode:
+        phase_schedule = normalize_spending_phases(
+            getattr(household, "spending_phases", []),
+            fallback_spending=float(getattr(household, "spending_target", 0.0)),
+            fallback_end_age=float(
+                getattr(household, "life_expectancy_end_age", 95.0)
+            ),
+        )
+        if not phase_schedule[0]["annual_spending"] > 0:
+            # There is no meaningful ratio when every entered phase is £0;
+            # fall back to the legacy flat solver rather than returning a
+            # misleading phased result.
+            phase_mode = False
+            phase_schedule = None
+
+    phase_base_amount = (
+        phase_schedule[0]["annual_spending"] if phase_mode else 0.0
+    )
+    phase_ratios = (
+        [phase["annual_spending"] / phase_base_amount for phase in phase_schedule]
+        if phase_mode
+        else []
+    )
+
+    def _scaled_phase_schedule(first_phase_amount: float):
+        if not phase_mode or phase_schedule is None:
+            return None
+        return [
+            {
+                "annual_spending": float(first_phase_amount * ratio),
+                "until_age": float(phase["until_age"]),
+            }
+            for phase, ratio in zip(phase_schedule, phase_ratios)
+        ]
+
     if target_year_offset < 1:
         return SustainableSpendingResult(
             max_spending_gbp=0.0,
@@ -283,6 +324,14 @@ def find_max_sustainable_spending(
         """
         hh_copy = copy.deepcopy(household)
         hh_copy.spending_target = float(spending_gbp)
+        if phase_mode:
+            hh_copy.drawdown_strategy = "Spending phases"
+            hh_copy.spending_phases = _scaled_phase_schedule(spending_gbp)
+        else:
+            # Preserve the original solver behavior for Fixed, Tapered,
+            # Safe Withdrawal and legacy households.
+            hh_copy.drawdown_strategy = base_strategy
+            hh_copy.spending_phases = []
         target_years = max(1, target_year_offset)
         results = run_simulation(hh_copy, years=target_years)
         net_worth = results["net_worth"]
@@ -412,6 +461,7 @@ def find_max_sustainable_spending(
                 iterations_used=bracket_iterations + step + 1,
                 converged=True,
                 strategy_at_run=base_strategy,
+                spending_phases=_scaled_phase_schedule(mid),
             )
         # Keep the last viable candidate below the first early-failure
         # candidate. This remains monotonic despite zero-clamped wealth.
@@ -436,4 +486,5 @@ def find_max_sustainable_spending(
         iterations_used=bracket_iterations + max_iterations,
         converged=False,
         strategy_at_run=base_strategy,
+        spending_phases=_scaled_phase_schedule(best_guess),
     )

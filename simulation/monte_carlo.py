@@ -20,26 +20,30 @@ Estimate while preserving the stochastic nominal simulation internally.
 import numpy as np
 from copy import deepcopy
 from .engine import run_simulation
-from .spending import apply_late_life_spending_reductions
+from .spending import (
+    apply_late_life_spending_reductions,
+    spending_for_age,
+)
 
 # -----------------------------
 # Monte Carlo configuration
 # -----------------------------
 
 # Standard deviation used around the user's pension growth-rate inputs when
-# the MC samples per-run values. DC gets the most dispersion (markets are
-# vol); DB and State Pension indexation are tied to inflation / triple-lock
-# policy and have far less dispersion.
+# the MC samples year-by-year values. DC gets the most dispersion (markets
+# are volatile); DB indexation is tied to inflation / triple-lock policy
+# and has far less dispersion. State Pension has no dispersion of its own:
+# it is indexed to that run's sampled inflation path (triple-lock-style
+# behaviour), which also keeps it flat in today's-value mode.
 DC_RATE_MC_STD = 0.05
 DB_RATE_MC_STD = 0.01
-SP_RATE_MC_STD = 0.01
-INCOME_RATE_MC_STD = 0.01  # Wage inflation volatility — same magnitude as DB / SP indexation.
+INCOME_RATE_MC_STD = 0.01  # Wage inflation volatility — same magnitude as DB indexation.
 
-# Floor applied to the sampled DC growth rate per MC run. With std=0.05
-# around a default user mean of 0.05, ~16% of runs would otherwise sample
-# a non-positive DC rate and over a 30–45-year horizon the DC pot would
-# collapse. Capping single-year drawdown at -30% bounds the worst case
-# while keeping realistic equity-crash scenarios in the distribution tail.
+# Floor applied to each sampled DC growth year. With std=0.05 around a
+# default user mean of 0.05, ~16% of sampled years would otherwise be
+# non-positive and over a 30–45-year horizon the DC pot would collapse.
+# Capping single-year drawdown at -30% bounds the worst case while keeping
+# realistic equity-crash scenarios in the distribution tail.
 DC_RATE_FLOOR = -0.30
 
 DEFAULT_RUNS = 1000
@@ -117,6 +121,8 @@ def monte_carlo_simulation(
     """
     all_paths = []
     failure_years = []
+    run_diagnostics = []
+    failed_run_rate_rows = []
     run_years = _resolve_horizon(household, years)
     asset_means = {}
     for asset in household.assets:
@@ -128,7 +134,7 @@ def monte_carlo_simulation(
         getattr(household, "inflation_rate", INFLATION_MEAN)
     )
 
-    for _ in range(runs):
+    for run_index in range(runs):
         h = deepcopy(household)
 
         # Run the internal engine path nominally. The optional today-value
@@ -142,41 +148,6 @@ def monte_carlo_simulation(
         h.person1.pcls_available = 0.0
         h.person2.pcls_taken = 0.0
         h.person2.pcls_available = 0.0
-
-        # Sample pension growth rates PER RUN around the user's mean input.
-        # Per-person rates can diverge (different scheme rules) so we sample
-        # each partner separately, but the spread is small for DB / State
-        # Pension (inflation-linked) and larger for DC (market vol). DC is
-        # floored at `DC_RATE_FLOOR` to avoid runaway compounding of negative
-        # samples over a 30–45-year horizon (see DC_RATE_FLOOR comment).
-        h.person1.dc_growth_rate = max(
-            DC_RATE_FLOOR,
-            np.random.normal(h.person1.dc_growth_rate, DC_RATE_MC_STD),
-        )
-        h.person2.dc_growth_rate = max(
-            DC_RATE_FLOOR,
-            np.random.normal(h.person2.dc_growth_rate, DC_RATE_MC_STD),
-        )
-        h.person1.db_growth_rate = np.random.normal(
-            h.person1.db_growth_rate, DB_RATE_MC_STD
-        )
-        h.person2.db_growth_rate = np.random.normal(
-            h.person2.db_growth_rate, DB_RATE_MC_STD
-        )
-        h.person1.state_pension_growth_rate = np.random.normal(
-            h.person1.state_pension_growth_rate, SP_RATE_MC_STD
-        )
-        h.person2.state_pension_growth_rate = np.random.normal(
-            h.person2.state_pension_growth_rate, SP_RATE_MC_STD
-        )
-        # Wage-inflation indexed earned income — sampled per-partner with the
-        # same dispersion as DB / SP (both are inflation-policy linked).
-        h.person1.income_growth_rate = np.random.normal(
-            h.person1.income_growth_rate, INCOME_RATE_MC_STD
-        )
-        h.person2.income_growth_rate = np.random.normal(
-            h.person2.income_growth_rate, INCOME_RATE_MC_STD
-        )
 
         # Honour the caller-provided `years` for every run so each path
         # is the same length — the fan chart, percentile bands and
@@ -192,13 +163,60 @@ def monte_carlo_simulation(
             for _ in range(run_years)
         ]
 
-        for year in range(run_years):
-            for asset in h.assets:
-                # Always simulate the same nominal stochastic path in both
-                # display modes. Today's-value mode is a presentation
-                # conversion below; it must not change property cashflows
-                # (especially downsizing proceeds) or the success outcome.
-                asset.growth_rate = growth_paths[year][asset.asset_type]
+        # Every growth rate in a run is now sampled PER YEAR, so each
+        # simulation year carries its own market return / indexation rate
+        # (sequence-of-returns risk) rather than one fixed rate for the
+        # whole run. The engine consumes these paths via the person's
+        # `*_growth_path` attributes and each asset's `growth_path`.
+        #
+        # DC: fresh sample every year around the user's mean, floored at
+        # `DC_RATE_FLOOR` so a single bad draw cannot collapse the pot over
+        # a 30–45-year horizon (see DC_RATE_FLOOR comment).
+        # DB: fresh sample every year around the user's mean with narrow
+        # indexation volatility — the user's rate stays the mean, only the
+        # year-to-year dispersion is stochastic.
+        # State Pension: NO separate sampling — it is triple-lock /
+        # inflation-linked, so it tracks that run's sampled inflation path
+        # exactly. The engine's today's-value transform then keeps it flat
+        # in today's-money view, matching the deterministic model.
+        # Wage inflation (earned income): a slow-moving planning assumption,
+        # so it stays a single per-run rate sampled around the user's input.
+        h.person1.dc_growth_path = np.maximum(
+            DC_RATE_FLOOR,
+            np.random.normal(
+                h.person1.dc_growth_rate, DC_RATE_MC_STD, run_years
+            ),
+        ).tolist()
+        h.person2.dc_growth_path = np.maximum(
+            DC_RATE_FLOOR,
+            np.random.normal(
+                h.person2.dc_growth_rate, DC_RATE_MC_STD, run_years
+            ),
+        ).tolist()
+        h.person1.db_growth_path = np.random.normal(
+            h.person1.db_growth_rate, DB_RATE_MC_STD, run_years
+        ).tolist()
+        h.person2.db_growth_path = np.random.normal(
+            h.person2.db_growth_rate, DB_RATE_MC_STD, run_years
+        ).tolist()
+        h.person1.state_pension_growth_path = inflation_path.tolist()
+        h.person2.state_pension_growth_path = inflation_path.tolist()
+        h.person1.income_growth_rate = np.random.normal(
+            h.person1.income_growth_rate, INCOME_RATE_MC_STD
+        )
+        h.person2.income_growth_rate = np.random.normal(
+            h.person2.income_growth_rate, INCOME_RATE_MC_STD
+        )
+
+        # Always simulate the same nominal stochastic path in both display
+        # modes. Today's-value mode is a presentation conversion below; it
+        # must not change property cashflows (especially downsizing
+        # proceeds) or the success outcome.
+        for asset in h.assets:
+            asset.growth_path = [
+                growth_paths[year][asset.asset_type]
+                for year in range(run_years)
+            ]
 
         base_spending = h.spending_target
         cumulative_inflation = np.cumprod(1.0 + inflation_path)
@@ -211,7 +229,18 @@ def monte_carlo_simulation(
                 # Build the nominal equivalent of the selected strategy.
                 # The engine consumes this optional path in preference to
                 # its deterministic inflation formula.
-                base = base_spending * cumulative_inflation[year]
+                if strategy == "Spending phases":
+                    # Phase amounts are real/today's-money figures. MC runs
+                    # internally in nominal pounds, so apply each path's
+                    # sampled cumulative inflation after selecting the age
+                    # band, then apply the existing spending shock.
+                    base = spending_for_age(
+                        h.person1.age + year,
+                        getattr(h, "spending_phases", []),
+                        fallback_spending=base_spending,
+                    ) * cumulative_inflation[year]
+                else:
+                    base = base_spending * cumulative_inflation[year]
                 if strategy == "Tapered (down with age)":
                     age = h.person1.age + year
                     years_to_retirement = max(
@@ -309,6 +338,110 @@ def monte_carlo_simulation(
                 break
         failure_years.append(failure_year)
 
+        # Keep exact annual rates for failed paths only. This makes a failed
+        # run reproducible for inspection without multiplying memory use by
+        # the full number of successful paths.
+        if failure_year is not None:
+            for year, growth_path in enumerate(growth_paths):
+                failed_run_rate_rows.append({
+                    "Run": run_index + 1,
+                    "Year": year,
+                    "Age": float(h.person1.age + year),
+                    "Failure year": failure_year,
+                    "Inflation": float(inflation_path[year]),
+                    "Spending shock": float(spending_shocks[year]),
+                    "ISA return": float(growth_path["ISA"]),
+                    "GIA return": float(growth_path["GIA"]),
+                    "Cash return": float(growth_path["Cash"]),
+                    "Property return": float(growth_path["Property"]),
+                    "P1 DC growth": float(h.person1.dc_growth_path[year]),
+                    "P2 DC growth": float(h.person2.dc_growth_path[year]),
+                    "P1 DB growth": float(h.person1.db_growth_path[year]),
+                    "P2 DB growth": float(h.person2.db_growth_path[year]),
+                    "P1 State Pension growth": float(
+                        h.person1.state_pension_growth_path[year]
+                    ),
+                    "P2 State Pension growth": float(
+                        h.person2.state_pension_growth_path[year]
+                    ),
+                    "P1 income growth": float(h.person1.income_growth_rate),
+                    "P2 income growth": float(h.person2.income_growth_rate),
+                })
+
+        # Keep one compact diagnostic row per simulation. This makes it
+        # possible to inspect the assumptions behind a failed run without
+        # forcing the UI to render every annual rate for every path.
+        def _path_stats(values):
+            values = np.asarray(values, dtype=float)
+            return float(np.mean(values)), float(np.min(values)), float(np.max(values))
+
+        inflation_stats = _path_stats(inflation_path)
+        spending_stats = _path_stats(spending_shocks)
+        asset_stats = {
+            asset_type: _path_stats(
+                [growth_path.get(asset_type, np.nan) for growth_path in growth_paths]
+            )
+            for asset_type in ("ISA", "GIA", "Cash", "Property")
+        }
+        # Pension-style rates are now per-year paths, so the per-run
+        # diagnostic reports their mean/min/max across the run's years
+        # (same shape as the asset-return columns). Wage inflation stays a
+        # single per-run value (it is sampled once per run).
+        dc1_stats = _path_stats(h.person1.dc_growth_path)
+        dc2_stats = _path_stats(h.person2.dc_growth_path)
+        db1_stats = _path_stats(h.person1.db_growth_path)
+        db2_stats = _path_stats(h.person2.db_growth_path)
+        sp1_stats = _path_stats(h.person1.state_pension_growth_path)
+        sp2_stats = _path_stats(h.person2.state_pension_growth_path)
+        run_diagnostics.append({
+            "Run": run_index + 1,
+            "Outcome": "Failed" if failure_year is not None else "Succeeded",
+            "Failure year": failure_year,
+            "Failure age": (
+                float(h.person1.age + failure_year)
+                if failure_year is not None
+                else None
+            ),
+            "P1 DC growth": dc1_stats[0],
+            "P1 DC growth min": dc1_stats[1],
+            "P1 DC growth max": dc1_stats[2],
+            "P2 DC growth": dc2_stats[0],
+            "P2 DC growth min": dc2_stats[1],
+            "P2 DC growth max": dc2_stats[2],
+            "P1 DB growth": db1_stats[0],
+            "P1 DB growth min": db1_stats[1],
+            "P1 DB growth max": db1_stats[2],
+            "P2 DB growth": db2_stats[0],
+            "P2 DB growth min": db2_stats[1],
+            "P2 DB growth max": db2_stats[2],
+            "P1 State Pension growth": sp1_stats[0],
+            "P1 State Pension growth min": sp1_stats[1],
+            "P1 State Pension growth max": sp1_stats[2],
+            "P2 State Pension growth": sp2_stats[0],
+            "P2 State Pension growth min": sp2_stats[1],
+            "P2 State Pension growth max": sp2_stats[2],
+            "P1 income growth": float(h.person1.income_growth_rate),
+            "P2 income growth": float(h.person2.income_growth_rate),
+            "Inflation mean": inflation_stats[0],
+            "Inflation min": inflation_stats[1],
+            "Inflation max": inflation_stats[2],
+            "Spending shock mean": spending_stats[0],
+            "Spending shock min": spending_stats[1],
+            "Spending shock max": spending_stats[2],
+            "ISA return mean": asset_stats["ISA"][0],
+            "ISA return min": asset_stats["ISA"][1],
+            "ISA return max": asset_stats["ISA"][2],
+            "GIA return mean": asset_stats["GIA"][0],
+            "GIA return min": asset_stats["GIA"][1],
+            "GIA return max": asset_stats["GIA"][2],
+            "Cash return mean": asset_stats["Cash"][0],
+            "Cash return min": asset_stats["Cash"][1],
+            "Cash return max": asset_stats["Cash"][2],
+            "Property return mean": asset_stats["Property"][0],
+            "Property return min": asset_stats["Property"][1],
+            "Property return max": asset_stats["Property"][2],
+        })
+
     all_paths = np.array(all_paths)
 
     percentiles = {
@@ -326,4 +459,6 @@ def monte_carlo_simulation(
         "success_rate": success_rate,
         "failure_years": failure_years,
         "all_paths": all_paths.tolist(),
+        "run_diagnostics": run_diagnostics,
+        "failed_run_rate_rows": failed_run_rate_rows,
     }

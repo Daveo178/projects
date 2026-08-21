@@ -139,6 +139,51 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
         )
 
     # -------------------------
+    # Per-run diagnostics — lets the user inspect the sampled assumptions
+    # behind successful and failed paths without crowding the charts.
+    # -------------------------
+    diagnostics_df = pd.DataFrame(mc.get("run_diagnostics", []))
+    if not diagnostics_df.empty:
+        with st.expander("🔎 Inspect rates and assumptions used in each run", expanded=False):
+            st.caption(
+                "One row represents one simulation. Failed runs show their "
+                "failure year and age; return and inflation columns show the "
+                "mean/minimum/maximum sampled over that run. Download the "
+                "full table for filtering and further analysis."
+            )
+            st.dataframe(diagnostics_df, use_container_width=True)
+            st.download_button(
+                "⬇️ Download Monte Carlo run diagnostics (CSV)",
+                data=diagnostics_df.to_csv(index=False),
+                file_name="monte_carlo_run_diagnostics.csv",
+                mime="text/csv",
+                key="download_mc_diagnostics",
+                help=(
+                    "Includes the outcome, failure age and the sampled "
+                    "pension, inflation, asset-return and spending-shock "
+                    "statistics for every run."
+                ),
+            )
+            failed_rates_df = pd.DataFrame(
+                mc.get("failed_run_rate_rows", [])
+            )
+            if failed_rates_df.empty:
+                st.caption("No failed paths, so there are no failure-specific annual rates to download.")
+            else:
+                st.download_button(
+                    "⬇️ Download exact annual rates for failed runs (CSV)",
+                    data=failed_rates_df.to_csv(index=False),
+                    file_name="monte_carlo_failed_run_annual_rates.csv",
+                    mime="text/csv",
+                    key="download_mc_failed_rates",
+                    help=(
+                        "Includes the exact annual inflation, spending shock "
+                        "and asset-return rates used by each failed path, "
+                        "plus its sampled pension and wage rates."
+                    ),
+                )
+
+    # -------------------------
     # Percentile fan chart
     # -------------------------
     st.subheader(f"\U0001F4C8 Net Worth Percentile Bands ({age_range})")
@@ -165,6 +210,156 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
             "90th Percentile"
         ]
     )
+
+    # -------------------------
+    # All-paths chart — many faint lines show the distribution directly.
+    # Rendered inline rather than inside a collapsed `st.expander`:
+    # Vega-Lite measures its container width when it mounts, and a chart
+    # mounted inside a hidden/collapsed container resolves a degenerate
+    # width, leaving the marks and axes blank. A deterministic subsample
+    # keeps 1,000–5,000 paths from overwhelming the browser.
+    # -------------------------
+    st.subheader("🕸️ All simulated paths")
+
+    path_matrix = np.asarray(mc["all_paths"], dtype=float)
+    total_paths, path_years = path_matrix.shape
+
+    # The percentile fan chart already carries the statistical summary, so
+    # this view only needs enough faint lines to reveal the spread. Evenly
+    # spaced sampling preserves the fan shape without plotting thousands of
+    # overlapping lines (visually dense and heavy for the browser).
+    max_display_paths = 500
+    if total_paths > max_display_paths:
+        keep_indices = np.unique(
+            np.linspace(0, total_paths - 1, max_display_paths, dtype=int)
+        )
+        path_matrix = path_matrix[keep_indices]
+    else:
+        keep_indices = np.arange(total_paths)
+    displayed_paths = path_matrix.shape[0]
+
+    all_paths_df = pd.DataFrame({
+        "Run": np.repeat(np.arange(1, displayed_paths + 1), path_years),
+        "Age": np.tile(
+            [y + p1_current_age for y in range(path_years)],
+            displayed_paths,
+        ),
+        "Net Worth": path_matrix.reshape(-1),
+    })
+    if not diagnostics_df.empty:
+        outcome_by_run = diagnostics_df["Outcome"].tolist()
+        all_paths_df["Outcome"] = np.repeat(
+            [outcome_by_run[i] for i in keep_indices],
+            path_years,
+        )
+    else:
+        all_paths_df["Outcome"] = np.repeat(
+            ["Unknown"] * displayed_paths,
+            path_years,
+        )
+
+    # Robust viewport: fit the scale to the spread of the paths actually
+    # being drawn. Use the 5th–95th percentile band of the (subsampled)
+    # displayed paths, taking the widest extent across the whole horizon,
+    # so the fan of lines fills the chart while genuine single-path
+    # outliers (one lucky/unlucky run) are still clipped rather than
+    # flattening the central distribution into a thin strip. A small
+    # padding keeps the extreme lines off the plot edges.
+    if np.isfinite(path_matrix).all():
+        lower_bound = float(np.percentile(path_matrix, 5, axis=0).min())
+        upper_bound = float(np.percentile(path_matrix, 95, axis=0).max())
+        if lower_bound == upper_bound:
+            lower_bound, upper_bound = lower_bound - 1.0, upper_bound + 1.0
+        padding = (upper_bound - lower_bound) * 0.02
+        axis_domain = [
+            lower_bound - padding,
+            upper_bound + padding,
+        ]
+    else:
+        # A non-finite value (e.g. a NaN leaked into one simulated path)
+        # would otherwise propagate into the scale domain and render a
+        # completely blank chart — no axes, no lines. Fall back to the
+        # observed finite path range so the chart always has a valid scale.
+        finite = path_matrix[np.isfinite(path_matrix).all(axis=1)]
+        if finite.size:
+            lo, hi = float(finite.min()), float(finite.max())
+            if lo == hi:
+                lo, hi = lo - 1.0, hi + 1.0
+        else:
+            lo, hi = -1.0, 1.0
+        axis_domain = [lo, hi]
+
+    # Drop any non-finite rows before charting. Vega-Lite silently skips
+    # individual NaN points, but a non-finite value in a scale input (or a
+    # fully empty dataset) renders a blank chart; filtering keeps the fan
+    # of lines intact while guaranteeing the scale always has valid data.
+    if not np.isfinite(all_paths_df["Net Worth"]).all():
+        all_paths_df = all_paths_df[np.isfinite(all_paths_df["Net Worth"])]
+
+    if all_paths_df.empty:
+        st.warning(
+            "No finite simulated paths to display — the plan produced "
+            "non-numeric values in every simulation run."
+        )
+    else:
+        all_paths_chart = (
+            alt.Chart(all_paths_df)
+            .mark_line(opacity=0.08, strokeWidth=0.6)
+            .encode(
+                x=alt.X("Age:Q", title="Age"),
+                y=alt.Y(
+                    "Net Worth:Q",
+                    title="Net worth (£)",
+                    scale=alt.Scale(
+                        domain=axis_domain,
+                        # Default `nice` tick steps give readable round
+                        # values (0, 100k, 200k, …) instead of only the
+                        # two domain endpoints.
+                    ),
+                    axis=alt.Axis(format=",.0f"),
+                ),
+                detail=alt.Detail("Run:N"),
+                color=alt.Color(
+                    "Outcome:N",
+                    scale=alt.Scale(
+                        domain=["Succeeded", "Failed", "Unknown"],
+                        range=["#2a6f6f", "#c0392b", "#8a8a8a"],
+                    ),
+                    title="Outcome",
+                ),
+                tooltip=[
+                    alt.Tooltip("Run:N", title="Run"),
+                    alt.Tooltip("Age:Q", title="Age", format=".1f"),
+                    alt.Tooltip("Net Worth:Q", title="Net worth", format=",.0f"),
+                    "Outcome:N",
+                ],
+            )
+            # Explicit `fit-x` autosize: Streamlit's default `fit` autosize
+            # (injected when the spec has none) can squash the plot into a
+            # thin band at the bottom of the chart area, hiding all but the
+            # two domain-endpoint ticks. `fit-x` keeps the container width
+            # while letting the plot fill the full 460px height.
+            .properties(height=460, autosize=alt.AutoSizeParams(type="fit-x"))
+        )
+        st.altair_chart(all_paths_chart, use_container_width=True)
+    if displayed_paths < total_paths:
+        st.caption(
+            f"Showing an evenly-spaced sample of {displayed_paths:,} of "
+            f"{total_paths:,} simulated paths as thin, translucent lines. "
+            "The vertical scale spans the 5th–95th percentile range of the "
+            "shown paths so the fan is easy to read; extreme single-path "
+            "outliers are clipped from this view. Red paths failed under "
+            "the model’s current year-end net-worth definition."
+        )
+    else:
+        st.caption(
+            f"Showing all {total_paths:,} simulated paths as thin, "
+            "translucent lines. The vertical scale spans the 5th–95th "
+            "percentile range of the shown paths so the fan is easy to "
+            "read; extreme single-path outliers are clipped from this view. "
+            "Red paths failed under the model’s current year-end net-worth "
+            "definition."
+        )
 
     # -------------------------
     # Failure year histogram

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .state_pension import FULL_STATE_PENSION
+from .spending import spending_for_age
 
 
 @dataclass
@@ -406,9 +407,9 @@ def compute_pre_retirement_deficit_signal(
         return None
 
     strategy = data.get("drawdown_strategy", "Fixed")
-    if strategy not in ("Fixed", "Inflation-adjusted"):
-        # Safe Withdrawal (4%) — asset-driven, not predictable from
-        # current inputs. Return None (no banner).
+    if strategy not in ("Fixed", "Inflation-adjusted", "Spending phases"):
+        # Safe Withdrawal (4%) and unknown strategies are asset-driven,
+        # not predictable from the simple spending inputs.
         return None
 
     spending_year0 = float(data.get("spending", 0.0) or 0.0)
@@ -482,11 +483,21 @@ def compute_pre_retirement_deficit_signal(
     total_drained = 0.0
 
     for y in range(horizon):
-        need = (
-            spending_year0 * ((1 + data_inflation_rate) ** y)
-            if inflate
-            else spending_year0
-        )
+        if strategy == "Spending phases":
+            # Explicit phase amounts are already in today's money and are
+            # intentionally not inflated; this mirrors the engine's phase
+            # strategy and keeps the warning aligned with the chart.
+            need = spending_for_age(
+                float(p1.get("age", 55.0)) + y,
+                data.get("spending_phases", []),
+                fallback_spending=spending_year0,
+            )
+        else:
+            need = (
+                spending_year0 * ((1 + data_inflation_rate) ** y)
+                if inflate
+                else spending_year0
+            )
         if not mortgage_in_spending and _dict_mortgage_is_active(mortgage, y):
             need += min(annual_mortgage, mortgage.get("outstanding", 0.0) or 0.0)
         # Household income for this year — wages + DB + SP for both

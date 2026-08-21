@@ -127,6 +127,7 @@ def build_household_from_session_state(
         assets=assets,
         mortgage=mortgage,
         spending_target=d["spending"],
+        spending_phases=list(d.get("spending_phases", [])),
         drawdown_strategy=normalize_drawdown_strategy(
             d.get("drawdown_strategy", "Fixed")
         ),

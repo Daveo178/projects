@@ -62,6 +62,29 @@ strategy = st.selectbox(
     else 0,
 )
 
+if strategy == "Spending phases":
+    st.caption(
+        "**Spending phases** — the simple age-based plan is edited on "
+        "**Quick Estimate**. Each amount is in today's money and the final "
+        "phase age is the plan horizon."
+    )
+    phase_rows = data.get("spending_phases", [])
+    if isinstance(phase_rows, list) and phase_rows:
+        phase_cols = st.columns(min(3, len(phase_rows)))
+        for phase_index, phase in enumerate(phase_rows[:3]):
+            if not isinstance(phase, dict):
+                continue
+            with phase_cols[phase_index]:
+                st.metric(
+                    f"Phase {phase_index + 1}",
+                    f"£{float(phase.get('annual_spending', 0)):,.0f}/yr",
+                    help=(
+                        f"Until age {float(phase.get('until_age', 0)):g}; "
+                        "edit this on Quick Estimate."
+                    ),
+                )
+    st.info("To change the phase amounts or ages, use **Quick Estimate → Lifestyle & plan horizon**.")
+
 # ----------------------------------------
 # 2b. Tapered-strategy params — only rendered when the user picks
 # "Tapered (down with age)". Streamlit re-runs top-to-bottom on
@@ -488,17 +511,31 @@ with st.expander(
                 )
             st.caption(
                 f"Terminal net worth at age {float(target_age):.0f} "
-                f"when spending at this rate: "
+                f"when the solved schedule is applied: "
                 f"**£{_last_result.terminal_net_worth_gbp:,.0f}** "
                 f"(target £0). Strategy in run: "
                 f"`{_strategy_label}`. Simulated "
                 f"{_last_result.iterations_used} times."
             )
+            _result_phases = getattr(_last_result, "spending_phases", None) or []
+            if _result_phases:
+                st.markdown("**Sustainable phased spending schedule**")
+                _result_phase_cols = st.columns(min(3, len(_result_phases)))
+                for _phase_index, _phase in enumerate(_result_phases):
+                    with _result_phase_cols[_phase_index]:
+                        st.metric(
+                            f"Phase {_phase_index + 1}",
+                            f"£{float(_phase['annual_spending']):,.0f}/yr",
+                            help=(
+                                f"Applies through age "
+                                f"{float(_phase['until_age']):g}."
+                            ),
+                        )
 
             # Apply CTA — commits the solver's answer as the spending
             # target (the Quick Estimate page reads the same value).
             if st.button(
-                "Apply as my annual spending",
+                "Apply phased spending plan" if _result_phases else "Apply as my annual spending",
                 type="primary",
                 use_container_width=True,
                 key="apply_sustainable",
@@ -510,13 +547,35 @@ with st.expander(
                     "want to compare values without committing."
                 ),
             ):
-                st.session_state.household_data["spending"] = float(
-                    _last_result.max_spending_gbp
-                )
+                if _result_phases:
+                    st.session_state.household_data["spending_phases"] = [
+                        {
+                            "annual_spending": float(phase["annual_spending"]),
+                            "until_age": float(phase["until_age"]),
+                        }
+                        for phase in _result_phases
+                    ]
+                    st.session_state.household_data["spending"] = float(
+                        _result_phases[0]["annual_spending"]
+                    )
+                    st.session_state.household_data["life_expectancy_end_age"] = float(
+                        _result_phases[-1]["until_age"]
+                    )
+                    st.session_state.household_data["drawdown_strategy"] = (
+                        "Spending phases"
+                    )
+                    _apply_message = (
+                        f"Phased spending plan saved — first phase "
+                        f"£{_last_result.max_spending_gbp:,.0f}/yr."
+                    )
+                else:
+                    st.session_state.household_data["spending"] = float(
+                        _last_result.max_spending_gbp
+                    )
+                    _apply_message = (
+                        f"Annual spending target set to "
+                        f"£{_last_result.max_spending_gbp:,.0f} and saved."
+                    )
                 save_household(st.session_state.household_data)
-                st.success(
-                    f"Annual spending target set to "
-                    f"£{_last_result.max_spending_gbp:,.0f} "
-                    f"and saved."
-                )
+                st.success(_apply_message)
                 st.rerun()

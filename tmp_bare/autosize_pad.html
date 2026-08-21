@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    #vis.vega-embed {
+      width: 100%;
+      display: flex;
+    }
+
+    #vis.vega-embed details,
+    #vis.vega-embed details summary {
+      position: relative;
+    }
+  </style>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega@6"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.1"></script>
+  <script type="text/javascript" src="https://cdn.jsdelivr.net/npm/vega-embed@7"></script>
+</head>
+<body>
+  <div id="vis"></div>
+  <script>
+    (function(vegaEmbed) {
+      var spec = {"config": {"view": {"continuousWidth": 300, "continuousHeight": 300}}, "data": {"name": "data-0d3acbc5284334edd258d98735128e13"}, "mark": {"type": "line", "opacity": 0.3}, "autosize": {"contains": "padding", "type": "pad"}, "datasets": {"data-0d3acbc5284334edd258d98735128e13": [{"Run": 1, "Age": 55, "Net Worth": 426460.785189515}, {"Run": 1, "Age": 56, "Net Worth": 426002.35812550836}, {"Run": 1, "Age": 57, "Net Worth": 454681.0697615861}, {"Run": 1, "Age": 58, "Net Worth": 493613.39798802184}, {"Run": 1, "Age": 59, "Net Worth": 508013.3698522495}, {"Run": 1, "Age": 60, "Net Worth": 485340.83180185384}, {"Run": 1, "Age": 61, "Net Worth": 534251.3262628838}, {"Run": 1, "Age": 62, "Net Worth": 537729.6418755346}, {"Run": 1, "Age": 63, "Net Worth": 558451.7172230966}, {"Run": 1, "Age": 64, "Net Worth": 586158.9775290756}, {"Run": 1, "Age": 65, "Net Worth": 602160.6535674132}, {"Run": 1, "Age": 66, "Net Worth": 641814.1026044446}, {"Run": 1, "Age": 67, "Net Worth": 651415.5658772049}, {"Run": 1, "Age": 68, "Net Worth": 661825.1252473925}, {"Run": 1, "Age": 69, "Net Worth": 686657.9484911814}, {"Run": 1, "Age": 70, "Net Worth": 705005.114910614}, {"Run": 1, "Age": 71, "Net Worth": 742411.186097364}, {"Run": 1, "Age": 72, "Net Worth": 736922.626043513}, {"Run": 1, "Age": 73, "Net Worth": 764696.0155247635}, {"Run": 1, "Age": 74, "Net Worth": 767188.5639104741}, {"Run": 2, "Age": 55, "Net Worth": 411705.1527624888}, {"Run": 2, "Age": 56, "Net Worth": 479804.2789316054}, {"Run": 2, "Age": 57, "Net Worth": 502966.5429828926}, {"Run": 2, "Age": 58, "Net Worth": 498867.5246939034}, {"Run": 2, "Age": 59, "Net Worth": 564046.3193598142}, {"Run": 2, "Age": 60, "Net Worth": 528184.5148810185}, {"Run": 2, "Age": 61, "Net Worth": 570686.3777595217}, {"Run": 2, "Age": 62, "Net Worth": 587192.2422496125}, {"Run": 2, "Age": 63, "Net Worth": 632991.6882153768}, {"Run": 2, "Age": 64, "Net Worth": 652040.3815485042}, {"Run": 2, "Age": 65, "Net Worth": 652324.2113854537}, {"Run": 2, "Age": 66, "Net Worth": 675672.4377940326}, {"Run": 2, "Age": 67, "Net Worth": 676683.2137855483}, {"Run": 2, "Age": 68, "Net Worth": 680288.0529766411}, {"Run": 2, "Age": 69, "Net Worth": 724781.3177601077}, {"Run": 2, "Age": 70, "Net Worth": 752345.2345365597}, {"Run": 2, "Age": 71, "Net Worth": 788454.3602109158}, {"Run": 2, "Age": 72, "Net Worth": 808035.6977317662}, {"Run": 2, "Age": 73, "Net Worth": 804190.0977388807}, {"Run": 2, "Age": 74, "Net Worth": 825465.45874137}, {"Run": 3, "Age": 55, "Net Worth": 484271.7055239936}, {"Run": 3, "Age": 56, "Net Worth": 498699.73094231536}, {"Run": 3, "Age": 57, "Net Worth": 514405.9471406248}, {"Run": 3, "Age": 58, "Net Worth": 589261.6309284768}, {"Run": 3, "Age": 59, "Net Worth": 572355.2172737252}, {"Run": 3, "Age": 60, "Net Worth": 593428.8854758322}, {"Run": 3, "Age": 61, "Net Worth": 601208.0695992511}, {"Run": 3, "Age": 62, "Net Worth": 651662.3553374787}, {"Run": 3, "Age": 63, "Net Worth": 635791.5322866307}, {"Run": 3, "Age": 64, "Net Worth": 676808.8957967905}, {"Run": 3, "Age": 65, "Net Worth": 686568.0015820948}, {"Run": 3, "Age": 66, "Net Worth": 725803.5374678889}, {"Run": 3, "Age": 67, "Net Worth": 732337.9229364669}, {"Run": 3, "Age": 68, "Net Worth": 742290.5172381639}, {"Run": 3, "Age": 69, "Net Worth": 779577.2665749202}, {"Run": 3, "Age": 70, "Net Worth": 806424.9780579563}, {"Run": 3, "Age": 71, "Net Worth": 820997.7583357475}, {"Run": 3, "Age": 72, "Net Worth": 844537.0784660968}, {"Run": 3, "Age": 73, "Net Worth": 850485.1685947855}, {"Run": 3, "Age": 74, "Net Worth": 874558.8825101929}, {"Run": 4, "Age": 55, "Net Worth": 539913.0932833607}, {"Run": 4, "Age": 56, "Net Worth": 564606.7025768919}, {"Run": 4, "Age": 57, "Net Worth": 577802.8057693332}, {"Run": 4, "Age": 58, "Net Worth": 584105.7609650248}, {"Run": 4, "Age": 59, "Net Worth": 632661.3921338063}, {"Run": 4, "Age": 60, "Net Worth": 643973.2859568761}, {"Run": 4, "Age": 61, "Net Worth": 645547.0247955093}, {"Run": 4, "Age": 62, "Net Worth": 696941.7338328866}, {"Run": 4, "Age": 63, "Net Worth": 696390.5245342514}, {"Run": 4, "Age": 64, "Net Worth": 730779.1809369421}, {"Run": 4, "Age": 65, "Net Worth": 760936.358432663}, {"Run": 4, "Age": 66, "Net Worth": 771934.7436613612}, {"Run": 4, "Age": 67, "Net Worth": 807091.0102681495}, {"Run": 4, "Age": 68, "Net Worth": 791477.6126946952}, {"Run": 4, "Age": 69, "Net Worth": 836035.1246176632}, {"Run": 4, "Age": 70, "Net Worth": 839727.8486358953}, {"Run": 4, "Age": 71, "Net Worth": 856938.0427622718}, {"Run": 4, "Age": 72, "Net Worth": 881317.2550285337}, {"Run": 4, "Age": 73, "Net Worth": 905326.7120180894}, {"Run": 4, "Age": 74, "Net Worth": 930842.4801334462}, {"Run": 5, "Age": 55, "Net Worth": 582522.7523882496}, {"Run": 5, "Age": 56, "Net Worth": 633512.3973043128}, {"Run": 5, "Age": 57, "Net Worth": 646984.9365959569}, {"Run": 5, "Age": 58, "Net Worth": 636956.3447058416}, {"Run": 5, "Age": 59, "Net Worth": 702323.782906934}, {"Run": 5, "Age": 60, "Net Worth": 728438.3376404587}, {"Run": 5, "Age": 61, "Net Worth": 737681.6935673947}, {"Run": 5, "Age": 62, "Net Worth": 737301.1274628147}, {"Run": 5, "Age": 63, "Net Worth": 743938.7106773419}, {"Run": 5, "Age": 64, "Net Worth": 795816.7759039671}, {"Run": 5, "Age": 65, "Net Worth": 793952.3457954023}, {"Run": 5, "Age": 66, "Net Worth": 838336.6760557364}, {"Run": 5, "Age": 67, "Net Worth": 843124.1246711529}, {"Run": 5, "Age": 68, "Net Worth": 874649.5855472557}, {"Run": 5, "Age": 69, "Net Worth": 885345.495957616}, {"Run": 5, "Age": 70, "Net Worth": 910598.5975228793}, {"Run": 5, "Age": 71, "Net Worth": 920157.5003108123}, {"Run": 5, "Age": 72, "Net Worth": 966788.0574085875}, {"Run": 5, "Age": 73, "Net Worth": 961903.6813905543}, {"Run": 5, "Age": 74, "Net Worth": 986029.8404516706}]}, "encoding": {"detail": {"field": "Run", "type": "nominal"}, "x": {"field": "Age", "type": "quantitative"}, "y": {"field": "Net Worth", "scale": {"domain": [0, 1000000]}, "type": "quantitative"}}, "height": 460, "width": 1000, "$schema": "https://vega.github.io/schema/vega-lite/v6.4.1.json"};
+      var embedOpt = {"mode": "vega-lite"};
+
+      function showError(el, error){
+          el.innerHTML = ('<div style="color:red;">'
+                          + '<p>JavaScript Error: ' + error.message + '</p>'
+                          + "<p>This usually means there's a typo in your chart specification. "
+                          + "See the javascript console for the full traceback.</p>"
+                          + '</div>');
+          throw error;
+      }
+      const el = document.getElementById('vis');
+      vegaEmbed("#vis", spec, embedOpt)
+        .catch(error => showError(el, error));
+    })(vegaEmbed);
+
+  </script>
+</body>
+</html>

@@ -78,6 +78,23 @@ def _seed():
 class TestMonteCarloSameLengthPaths(unittest.TestCase):
     """Lock the homogeneous-paths invariant under the np.array call."""
 
+    def test_run_diagnostics_match_paths_and_include_sampled_rates(self):
+        _seed()
+        h = _minimal_household()
+        mc = monte_carlo_simulation(h, runs=4, years=8)
+
+        self.assertEqual(len(mc["run_diagnostics"]), 4)
+        self.assertEqual(
+            [row["Run"] for row in mc["run_diagnostics"]],
+            [1, 2, 3, 4],
+        )
+        for row in mc["run_diagnostics"]:
+            self.assertIn(row["Outcome"], ("Succeeded", "Failed"))
+            self.assertIn("P1 DC growth", row)
+            self.assertIn("Inflation min", row)
+            self.assertIn("ISA return max", row)
+            self.assertIn("Spending shock min", row)
+
     def test_all_paths_have_same_length_as_horizon(self):
         _seed()
         h = _minimal_household()
@@ -252,6 +269,114 @@ class TestMonteCarloSameLengthPaths(unittest.TestCase):
         self.assertIn("failure_years", mc)
         self.assertIn("all_paths", mc)
         self.assertEqual(len(mc["failure_years"]), 5)
+
+
+class TestMonteCarloPerYearGrowthPaths(unittest.TestCase):
+    """Growth rates are sampled per year, not once per run.
+
+    The user flagged that DC pension growth looked fixed for all years of
+    a run while ISA/cash/GIA reported per-year ranges. Two problems were
+    fixed:
+
+    1. Pension-style rates (DC/DB) were sampled ONCE per run and held
+       fixed for every year. They are now sampled fresh each year, and
+       the State Pension is indexed to that run's sampled inflation path.
+    2. Asset rates WERE sampled per year but the assignment loop ran
+       before the engine and only the last year's sample stuck, so the
+       simulation actually used one fixed rate for all years while the
+       diagnostics table showed ranges from samples that were never
+       applied. The per-year path is now consumed by the engine.
+    """
+
+    def test_dc_growth_varies_year_to_year_within_a_run(self):
+        """A single run's DC growth is not constant across its years."""
+        _seed()
+        h = _minimal_household()
+        h.person1.dc_pot = 100_000.0
+        mc = monte_carlo_simulation(h, runs=1, years=12)
+        row = mc["run_diagnostics"][0]
+        self.assertIn("P1 DC growth min", row)
+        self.assertIn("P1 DC growth max", row)
+        self.assertLess(row["P1 DC growth min"], row["P1 DC growth max"])
+
+    def test_state_pension_tracks_sampled_inflation(self):
+        """State Pension indexation equals that run's sampled inflation."""
+        _seed()
+        h = _minimal_household()
+        h.person1.state_pension_age = 66.0
+        h.person1.age = 65.0
+        mc = monte_carlo_simulation(h, runs=1, years=8)
+        row = mc["run_diagnostics"][0]
+        self.assertAlmostEqual(
+            row["P1 State Pension growth min"], row["Inflation min"]
+        )
+        self.assertAlmostEqual(
+            row["P1 State Pension growth max"], row["Inflation max"]
+        )
+
+    def test_engine_consumes_per_year_dc_growth_path(self):
+        """The DC pot compounds with each year's own rate, not one fixed rate."""
+        from simulation.engine import _dc_monthly_compound, run_simulation
+
+        h = _minimal_household()
+        h.person1.dc_pot = 100_000.0
+        rates = [0.01, 0.05, 0.09, 0.02]
+        h.person1.dc_growth_path = rates
+        results = run_simulation(h, years=len(rates))
+        expected = 100_000.0
+        for r in rates:
+            expected = _dc_monthly_compound(expected, r, 0.0)
+        self.assertAlmostEqual(results["dc_pot"][-1], expected, places=2)
+
+    def test_engine_consumes_per_year_asset_growth_path(self):
+        """ISA value appreciates at each year's sampled rate."""
+        from models.asset import Asset
+        from simulation.engine import run_simulation
+
+        h = _minimal_household()
+        isa = Asset(
+            name="ISA", value=10_000.0, growth_rate=0.05, asset_type="ISA"
+        )
+        isa.growth_path = [0.01, 0.10, 0.02]
+        h.assets = [isa]
+        results = run_simulation(h, years=len(isa.growth_path))
+        expected = 10_000.0 * 1.01 * 1.10 * 1.02
+        self.assertAlmostEqual(results["isa_value"][-1], expected, places=2)
+
+    def test_engine_state_pension_path_compounds_cumulatively(self):
+        """State Pension payouts follow the per-year indexation path."""
+        from simulation.engine import run_simulation
+        from simulation.state_pension import FULL_STATE_PENSION
+
+        h = _minimal_household()
+        h.person1.age = 66.0
+        h.person1.state_pension_age = 66.0
+        h.person1.state_pension_growth_path = [0.01, 0.03, 0.02]
+        results = run_simulation(h, years=3)
+        self.assertAlmostEqual(
+            results["state_payout"][0], FULL_STATE_PENSION, places=2
+        )
+        self.assertAlmostEqual(
+            results["state_payout"][1],
+            FULL_STATE_PENSION * 1.01,
+            places=2,
+        )
+        self.assertAlmostEqual(
+            results["state_payout"][2],
+            FULL_STATE_PENSION * 1.01 * 1.03,
+            places=2,
+        )
+
+    def test_engine_scalar_rates_unchanged_without_paths(self):
+        """Deterministic runs without paths keep the scalar compounding."""
+        from simulation.engine import run_simulation
+
+        h = _minimal_household()
+        h.person1.dc_pot = 100_000.0
+        h.person1.dc_growth_rate = 0.05
+        results = run_simulation(h, years=3)
+        expected = 100_000.0 * (1 + 0.05 / 12) ** 36
+        self.assertAlmostEqual(results["dc_pot"][-1], expected, places=2)
 
 
 if __name__ == "__main__":

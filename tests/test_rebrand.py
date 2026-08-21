@@ -1,4 +1,4 @@
-"""Regression tests for the generic Couples' Retirement Planner branding."""
+"""Regression tests for the generic Retirement Planner branding."""
 
 import unittest
 
@@ -40,7 +40,7 @@ class TestGenericAIPrompts(unittest.TestCase):
         root = Path(__file__).resolve().parents[1]
         for relative_path in ("main.py", "brand_chrome.py", "pages/0_Quick_Estimate.py"):
             text = (root / relative_path).read_text(encoding="utf-8")
-            self.assertIn("Couples' Retirement Planner", text)
+            self.assertIn("Retirement Planner", text)
             self.assertNotIn("Shaz and Dave's Road to Retirement", text)
 
 

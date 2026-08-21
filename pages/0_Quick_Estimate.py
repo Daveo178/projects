@@ -93,6 +93,7 @@ from pages_helpers.personal_employer_contrib import (
     render_personal_employer_contrib_block,
     resolve_legacy_after_save,
 )
+from simulation.spending import normalize_spending_phases
 
 # -----------------------------------------------------------
 # Page-level setup — chrome + state seed + sidebar widget
@@ -102,7 +103,7 @@ from pages_helpers.personal_employer_contrib import (
 # `apply_chrome()` injection every other page uses so brand styles
 # propagate uniformly.
 st.set_page_config(
-    page_title="Quick Estimate — Couples' Retirement Planner",
+    page_title="Quick Estimate — Retirement Planner",
     layout="wide",
 )
 apply_chrome()
@@ -161,8 +162,17 @@ if "mortgage" not in data or not isinstance(data["mortgage"], dict):
 # fabricated annual figure that the user might mistake for their
 # own number).
 data.setdefault("spending", 0)
-data.setdefault("end_age", 95.0)
-data.setdefault("drawdown_strategy", "Fixed")
+if not isinstance(data.get("spending_phases"), list) or not data["spending_phases"]:
+    # Legacy plans have one flat spending number. Seed the new explicit
+    # three-phase editor without inventing a taper curve.
+    _legacy_spending = float(data.get("spending", 0.0) or 0.0)
+    _legacy_end_age = float(data.get("life_expectancy_end_age", 95.0))
+    data["spending_phases"] = [
+        {"annual_spending": _legacy_spending, "until_age": 70.0},
+        {"annual_spending": _legacy_spending, "until_age": 80.0},
+        {"annual_spending": _legacy_spending, "until_age": _legacy_end_age},
+    ]
+data.setdefault("drawdown_strategy", "Spending phases")
 data.setdefault("cash_buffer", False)
 data.setdefault("single_retiree", False)
 data.setdefault("life_expectancy_end_age", 95.0)
@@ -1126,9 +1136,9 @@ with st.expander("🏠 Mortgage (optional)", expanded=False):
 # -----------------------------------------------------------
 # Section 4 — Lifestyle & plan.
 # -----------------------------------------------------------
-# Annual spending is the BIG slider on Aviva's tool. Plan-end-age
-# defaults to 95 (≈p10 mortality for a 55-year-old couple) but
-# exposed so the user can shorten / extend it explicitly.
+# Lifestyle spending is entered as three explicit age-based phases.
+# The final phase's end age is the plan horizon, so there is no separate
+# hidden taper or unrelated plan-end-age control to keep in sync.
 # -----------------------------------------------------------
 st.subheader("🎯 Lifestyle & plan horizon")
 
@@ -1137,63 +1147,105 @@ st.subheader("🎯 Lifestyle & plan horizon")
 # The sidebar writes to `data["inflation_rate"]` on every render;
 # `_qe_sync_data` below preserves it in the save dict automatically.
 
-col_spending, col_endage, col_growth = st.columns(3)
-with col_spending:
-    spending = st.number_input(
-        "Annual spending in today's money (£ / yr)",
-        min_value=0,
-        max_value=200_000,
-        value=int(data.get("spending", 35_000)),
-        step=500,
-        # NOTE: no `key=` here on purpose. The Spending page (4)
-        # also omits the key on its matching widget — and for the
-        # same reason: a widget WITH a key owns the session_state
-        # slot, so any external write to `st.session_state["qe_…"]`
-        # raises `StreamlitAPIException: … cannot be modified
-        # after the widget … is instantiated`. Without a key the
-        # widget re-reads `value=int(data.get("spending", 35_000))`
-        # on every render — so when the calculator's Apply button
-        # updates `data["spending"]` + calls `st.rerun()`, the
-        # widget naturally picks up the new value on the next
-        # render without us touching session_state.
-        help="How much you plan to spend each year in retirement, in TODAY's pounds. "
-             "This is the headline driver of the chart below — try changing it by "
-             "£5,000 to see how your plan responds.",
+# Three explicit, easy-to-read spending bands. Amounts are in today's
+# money and each age is the inclusive end of that band; the final band
+# also becomes the plan horizon.
+_raw_saved_phases = data.get("spending_phases")
+_saved_amounts = [
+    float(phase.get("annual_spending", 0.0))
+    for phase in (_raw_saved_phases or [])
+    if isinstance(phase, dict)
+]
+if (
+    isinstance(_raw_saved_phases, list)
+    and len(_raw_saved_phases) >= 3
+    and _saved_amounts
+    and max(_saved_amounts) <= 0
+):
+    # Preserve the three starter age boxes on a brand-new £0 plan. Once a
+    # user enters a positive amount, normalize_spending_phases compacts any
+    # later £0 boxes into a one- or two-phase plan as intended.
+    _saved_phases = [
+        dict(phase)
+        for phase in _raw_saved_phases[:3]
+        if isinstance(phase, dict)
+    ]
+else:
+    _saved_phases = normalize_spending_phases(
+        _raw_saved_phases,
+        fallback_spending=float(data.get("spending", 0.0) or 0.0),
+        fallback_end_age=float(data.get("life_expectancy_end_age", 95.0)),
     )
-with col_endage:
-    end_age = st.number_input(
-        "Plan until age (joint life, last to die)",
-        min_value=18,
-        max_value=120,
-        value=int(data.get("life_expectancy_end_age", 95)),
-        step=1,
-        key="qe_end_age",
-        help="The plan funds BOTH partners until whichever one reaches this age. "
-             "95 is a typical UK upper bound for a 55-year-old couple.",
+# Keep missing optional phases at £0 rather than copying the last amount.
+# That preserves a saved one- or two-phase plan when the three-column form
+# is rendered.
+while len(_saved_phases) < 3:
+    previous_age = _saved_phases[-1]["until_age"] if _saved_phases else 70.0
+    default_age = 95.0 if len(_saved_phases) == 2 else 80.0
+    _saved_phases.append({
+        "annual_spending": 0.0,
+        "until_age": max(default_age, previous_age + 1.0),
+    })
+_saved_phases = _saved_phases[:3]
+
+phase_cols = st.columns(3)
+phase_widgets = []
+for phase_index, (phase_col, phase) in enumerate(zip(phase_cols, _saved_phases), start=1):
+    with phase_col:
+        st.markdown(f"**Phase {phase_index}**")
+        phase_amount = st.number_input(
+            "Annual spending (£ / yr)",
+            min_value=0,
+            max_value=200_000,
+            value=int(round(phase["annual_spending"])),
+            step=500,
+            key=f"qe_phase_{phase_index}_amount",
+            help="The annual amount you plan to spend, in today's money.",
+        )
+        phase_age = st.number_input(
+            "Until age",
+            min_value=18,
+            max_value=120,
+            value=int(round(phase["until_age"])),
+            step=1,
+            key=f"qe_phase_{phase_index}_age",
+            help=(
+                "This amount applies through this age. The next phase starts "
+                "after it; Phase 3 is also the plan horizon."
+            ),
+        )
+        phase_widgets.append((phase_amount, phase_age))
+
+phase_1_amount, phase_1_age = phase_widgets[0]
+phase_2_amount, phase_2_age = phase_widgets[1]
+phase_3_amount, phase_3_age = phase_widgets[2]
+if not (phase_1_age < phase_2_age < phase_3_age):
+    st.warning(
+        "Please enter increasing ages for the three phases. The plan will "
+        "use the ages in ascending order when you save it."
     )
-with col_growth:
-    # Simplified investment growth rate — Aviva-style single slider
-    # that applies to ALL DC pots AND ISA/GIA assets at once. The
-    # Detailed Pensions/Assets pages still expose per-asset/per-partner
-    # growth-rate sliders; this one overrides them on Quick Estimate
-    # Run/Calculate so Simple-mode users get one knob instead of five.
-    # Cash and Property growth rates are NOT affected (Cash stays at
-    # 2%, Property at 0% — both mirror model_defaults).
-    _saved_growth_pct = float(data.get("person1", {}).get("dc_growth_rate", 0.05)) * 100
-    investment_growth_rate = st.slider(
-        "Investment growth (% per year)",
-        min_value=0.0,
-        max_value=10.0,
-        value=_saved_growth_pct,
-        step=0.5,
-        key="qe_investment_growth",
-        help=(
-            "Average annual investment growth applied to ALL DC pensions "
-            "AND ISA/GIA savings. Default 5% reflects a long-run balanced "
-            "portfolio. Cash savings and property growth are NOT affected — "
-            "they use their own defaults (2% and 0% respectively)."
-        ),
-    ) / 100  # slider reads percent; data stores decimal (0.05 = 5%)
+
+st.caption(
+    "Each phase is an explicit annual amount in today's money. For example: "
+    "**£40,000 until age 70**, then **£30,000 until age 80**, then "
+    "**£20,000 until age 94**."
+)
+st.markdown("**Investment assumptions**")
+# Simplified investment growth rate — one knob for all DC pots and ISA/GIA.
+_saved_growth_pct = float(data.get("person1", {}).get("dc_growth_rate", 0.05)) * 100
+investment_growth_rate = st.slider(
+    "Investment growth (% per year)",
+    min_value=0.0,
+    max_value=10.0,
+    value=_saved_growth_pct,
+    step=0.5,
+    key="qe_investment_growth",
+    help=(
+        "Average annual investment growth applied to ALL DC pensions "
+        "AND ISA/GIA savings. Cash savings and property growth are NOT "
+        "affected — they use their own defaults (2% and 0% respectively)."
+    ),
+) / 100
 
 # -----------------------------------------------------------
 # PartnerWidgets payload — typed wrapper for the per-partner
@@ -1340,7 +1392,7 @@ def _qe_sync_data(data):
     p1_employer_pct, p1_touched (and the same for p2), plus
     isa/gia/cash/property_value, mort_outstanding / mort_rate /
     mort_end_year / mort_payment_monthly / mort_overpayment /
-    mort_include_in_spending, spending, end_age.
+    mort_include_in_spending, and the three spending phase widgets.
 
     This helper MUTATES `data` only — it does NOT save to disk
     or trigger a rerun. Callers layer persistence policy on top:
@@ -1406,8 +1458,8 @@ def _qe_sync_data(data):
         )
         # Simplified investment growth rate — the Section 4 slider
         # overrides dc_growth_rate for both partners. Captured from
-        # the page-level slider via closure (same pattern as `spending`
-        # and `end_age`). The Detailed Pensions page's per-partner
+        # the page-level slider via closure. The Detailed Pensions page's
+        # per-partner
         # dc_growth_rate survives only if the user edits it there AND
         # doesn't re-run Quick Estimate (the slider always writes on
         # Run click, matching Aviva's one-knob convention).
@@ -1596,9 +1648,28 @@ def _qe_sync_data(data):
             include_in_spending=mort_include_in_spending,
         )
     )
-    data["spending"] = float(spending)
-    data["life_expectancy_end_age"] = float(end_age)
-    data["drawdown_strategy"] = "Fixed"   # Quick Estimate always uses Fixed
+    # Persist the three explicit bands as a stable JSON-friendly shape.
+    # Sort thresholds and enforce strictly increasing ages so malformed
+    # widget input cannot produce ambiguous transitions in the engine.
+    raw_phases = [
+        {"annual_spending": float(phase_1_amount), "until_age": float(phase_1_age)},
+        {"annual_spending": float(phase_2_amount), "until_age": float(phase_2_age)},
+        {"annual_spending": float(phase_3_amount), "until_age": float(phase_3_age)},
+    ]
+    raw_phases.sort(key=lambda phase: phase["until_age"])
+    for index in range(1, len(raw_phases)):
+        raw_phases[index]["until_age"] = max(
+            raw_phases[index]["until_age"],
+            raw_phases[index - 1]["until_age"] + 1.0,
+        )
+    data["spending_phases"] = normalize_spending_phases(
+        raw_phases,
+        fallback_spending=raw_phases[0]["annual_spending"],
+        fallback_end_age=raw_phases[-1]["until_age"],
+    )
+    data["spending"] = data["spending_phases"][0]["annual_spending"]
+    data["life_expectancy_end_age"] = data["spending_phases"][-1]["until_age"]
+    data["drawdown_strategy"] = "Spending phases"
     data["cash_buffer"] = bool(data.get("cash_buffer", False))
     data["inflation_rate"] = float(
         data.get("inflation_rate", 0.025)
@@ -1608,11 +1679,11 @@ def _qe_sync_data(data):
 # -----------------------------------------------------------
 # Section 4b — Maximum-sustainable-spending calculator.
 # -----------------------------------------------------------
-# Inverse of the `spending` widget above: instead of asking the
-# user to TYPE a spending figure and learning afterwards whether
-# the plan can sustain it (forward direction), the user picks a
-# TARGET AGE and we solve for the highest annual spending that
-# exactly depletes household wealth to £0 at that age (inverse).
+# Inverse of the phased spending widgets above: instead of asking the
+# user to TYPE a spending schedule and learning afterwards whether
+# the plan can sustain it (forward direction), the user picks a TARGET AGE
+# and we solve for the highest first-phase amount while preserving the
+# active phase ratios and age thresholds.
 #
 # Why it lives on Quick Estimate (not just the detailed Spending
 # page)
@@ -1621,12 +1692,13 @@ def _qe_sync_data(data):
 # max I can spend?" affordance on the landing page. Most casual
 # users never flip into Detailed mode; if the calculator is
 # buried on Page 4 it never gets used. The Quick Estimate
-# constraint set (today's-money + Fixed strategy) maps verbatim
-# to the same solver the Spending page uses, so the math is
-# bit-identical — just the wrapper is on the landing page.
+# constraint set (today's-money + explicit phases) maps to the
+# same solver used by the detailed page, while preserving the
+# entered phase ratios and ages.
 #
 # Quick-Estimate-specific constraints honoured here:
-#   * Always Fixed strategy (`_qe_sync_data` hard-codes this).
+#   * The calculator scales the active phase schedule from the solved
+#     first-phase amount; zero-valued optional phases are omitted.
 #   * Always today's-money mode (the helper kwarg
 #     `show_in_todays_value=True` forces this for the in-memory
 #     Household dataclass — same flag the Run block uses).
@@ -1644,14 +1716,15 @@ with st.expander(
 ):
     st.caption(
         "Pick a **target age** and click **Calculate** to find the "
-        "highest annual spending (in today's pounds) that exactly "
-        "depletes your household wealth at that age. Use **Apply** "
-        "to set your spending target from the result."
+        "highest sustainable **first-phase** spending amount in today's "
+        "pounds. The other active phases are scaled in the same ratio as "
+        "your entered amounts, and their ages are preserved. Use **Apply** "
+        "to save the resulting phased plan."
     )
     st.caption(
-        "**Always Fixed + today's money on Quick Estimate** — the "
-        "Detailed Spending page (Page 4) lets you switch strategies "
-        "and currency modes if you want more flexibility."
+        "**Explicit phases + today's money on Quick Estimate** — the "
+        "red graph line steps down at the ages you enter. A £0 later phase "
+        "is treated as unused, so one- and two-phase plans are supported."
     )
 
     # Initialise session_state target_age once so a re-render
@@ -1696,7 +1769,7 @@ with st.expander(
         help=(
             "Bisects on terminal net worth — ~1 second typical "
             "(18-25 iterations). Does NOT save to disk; click "
-            "'Apply as my annual spending' below to commit."
+            "'Apply phased spending plan' below to commit."
         ),
     ):
         # Mirror the CURRENT widget values into the data dict so
@@ -1711,6 +1784,10 @@ with st.expander(
         _hh_for_solver = (
             build_household_from_session_state(show_in_todays_value=True)
         )
+        # The solver scales the active phase amounts proportionally and
+        # preserves their entered ages. A zero-valued optional phase is
+        # ignored, so one- and two-phase plans remain one- and two-phase
+        # calculations.
         from simulation.sustainable_spending import (
             find_max_sustainable_spending,
         )
@@ -1758,7 +1835,7 @@ with st.expander(
                     f"✅ Sustainable to **age "
                     f"{int(round(float(_calc_target_age)))}** — "
                     f"{_last_result.iterations_used} solver "
-                    f"iterations, ±£200 precision, Fixed strategy "
+                    f"iterations, ±£200 precision, phased strategy "
                     f"+ today's money."
                 )
             else:
@@ -1773,11 +1850,25 @@ with st.expander(
             st.caption(
                 f"Terminal net worth at age "
                 f"{int(round(float(_calc_target_age)))} when "
-                f"spending at this rate: "
+                f"the phased schedule is applied: "
                 f"**£{_last_result.terminal_net_worth_gbp:,.0f}** "
                 f"(target £0). Simulated "
                 f"{_last_result.iterations_used} times."
             )
+            _result_phases = getattr(_last_result, "spending_phases", None) or []
+            if _result_phases:
+                st.markdown("**Sustainable phased spending schedule**")
+                _result_phase_cols = st.columns(min(3, len(_result_phases)))
+                for _phase_index, _phase in enumerate(_result_phases):
+                    with _result_phase_cols[_phase_index]:
+                        st.metric(
+                            f"Phase {_phase_index + 1}",
+                            f"£{float(_phase['annual_spending']):,.0f}/yr",
+                            help=(
+                                f"Applies through age "
+                                f"{float(_phase['until_age']):g}."
+                            ),
+                        )
 
             # Apply CTA — primary "I'm committing" button. Saves
             # to disk AND updates data["spending"] so the spending
@@ -1787,18 +1878,35 @@ with st.expander(
             # that's intentional so a casual Calculate click
             # doesn't accidentally churn the rendered chart.
             if st.button(
-                "Apply as my annual spending",
+                "Apply phased spending plan",
                 type="primary",
                 use_container_width=True,
                 key="qe_apply_sustainable",
                 help=(
-                    "Updates Annual household spending above AND "
-                    "keeps it in this session. Hit Run Quick Estimate "
-                    "to refresh the chart with the new spending."
+                    "Updates the phased spending values above and keeps "
+                    "them in this session. Hit Run Quick Estimate to "
+                    "refresh the chart with the new spending plan."
                 ),
             ):
                 _new_spending = float(_last_result.max_spending_gbp)
-                data["spending"] = _new_spending
+                _new_phases = _result_phases or [
+                    {
+                        "annual_spending": _new_spending,
+                        "until_age": float(
+                            data.get("life_expectancy_end_age", 95.0)
+                        ),
+                    }
+                ]
+                data["spending_phases"] = [
+                    {
+                        "annual_spending": float(phase["annual_spending"]),
+                        "until_age": float(phase["until_age"]),
+                    }
+                    for phase in _new_phases
+                ]
+                data["spending"] = data["spending_phases"][0]["annual_spending"]
+                data["life_expectancy_end_age"] = data["spending_phases"][-1]["until_age"]
+                data["drawdown_strategy"] = "Spending phases"
                 save_household(data)
                 # The spending widget above has NO `key=` — so it
                 # re-reads `value=int(data.get("spending", …))` on
@@ -1826,10 +1934,9 @@ with st.expander(
                     "qe_sustainable_last_target_age", None
                 )
                 st.success(
-                    f"Annual spending set to "
-                    f"£{_last_result.max_spending_gbp:,.0f} "
-                    f"and applied — hit **Run Quick Estimate** "
-                    f"to refresh the chart."
+                    f"Phased spending plan applied — first phase "
+                    f"£{_last_result.max_spending_gbp:,.0f}/yr. Hit "
+                    f"**Run Quick Estimate** to refresh the chart."
                 )
                 st.rerun()
 
@@ -2054,18 +2161,15 @@ if results is not None:
     peak_total = (
         melted.groupby("AgeLabel")["£/yr"].sum().max()
     )
-    spending_value = float(data.get("spending", 0))
-    # Y-axis upper bound — fit both the highest stacked bar
-    # AND the spending reference line so the dashed line never
-    # clips off the top. With spending=0 (degenerate "you
-    # haven't entered any spending yet" case) skip the
-    # spending-based ceiling so a sparse default doesn't
-    # inflate the y-axis.
-    y_axis_max = max(
-        peak_total * 1.05,
-        spending_value * 1.1 if spending_value > 0 else 0,
-        1.0,
+    # Use the engine's actual per-year spending series so explicit phase
+    # changes are visible on the same chart as the income bars.
+    spending_series = results.get("spending", [0.0] * sim_years)
+    spending_value = max(
+        (float(spending_series[i]) for i in offsets),
+        default=float(data.get("spending", 0.0)),
     )
+    # Fit both the highest stacked bar and the highest phase amount.
+    y_axis_max = max(peak_total * 1.05, spending_value * 1.1, 1.0)
 
     bar = (
         alt.Chart(melted)
@@ -2114,14 +2218,9 @@ if results is not None:
         .properties(height=440)
     )
 
-    # Annual-spending reference line — a horizontal red dashed
-    # line at the household's year-0 spending target so the
-    # viewer can immediately see "do my income sources meet
-    # the dashed line?" at each milestone age. Quick Estimate
-    # always runs in Fixed strategy + today's-money mode, so
-    # the £/yr figure is constant across all ages. In nominal
-    # mode or with strategy ≠ Fixed this would be a per-age
-    # step-line, but those modes aren't reached on this page.
+    # Annual-spending reference line — a stepped red line driven by
+    # the exact phase values used by the engine. This makes a transition
+    # such as £40k → £30k → £20k immediately visible in the graph.
     first_age = (
         year_df["AgeLabel"].iloc[0]
         if len(year_df) > 0
@@ -2133,14 +2232,13 @@ if results is not None:
         else first_age
     )
     spending_df = pd.DataFrame({
-        "AgeLabel": [first_age, last_age],
-        "Annual Spending": [
-            spending_value, spending_value
-        ],
+        "AgeLabel": [year_df["AgeLabel"].iloc[i] for i in offsets],
+        "Annual Spending": [float(spending_series[i]) for i in offsets],
     })
     spending_line = (
         alt.Chart(spending_df)
         .mark_line(
+            interpolate="step-after",
             color="#c0392b",
             strokeWidth=3,
             strokeDash=[6, 4],
@@ -2170,9 +2268,10 @@ if results is not None:
         "working years), DB Pension (from your DB draw age), "
         "State Pension (from your State Pension age), and Asset "
         "Drawdown (PCLS / UFPLS from your DC pot + ISA / GIA / "
-        "Cash drawn to bridge any shortfall). **All segments are "
-        "pre-tax**, so the bars sit above the dashed red **net "
-        "spending target** line by roughly the income tax + "
+        "Cash drawn to bridge any shortfall). The dashed red **stepped "
+        "spending line** is the exact phase schedule you entered. **All "
+        "segments are pre-tax**, so the bars sit above it by roughly the "
+        "income tax + "
         "National Insurance due — after tax, what you keep lands "
         "on the dashed line (the engine targets your after-tax "
         "income to cover your spending exactly). If your spending "

@@ -1,6 +1,9 @@
 from .state_pension import state_pension_income
 from .drawdown import drain_single_asset_class
-from .spending import apply_late_life_spending_reductions
+from .spending import (
+    apply_late_life_spending_reductions,
+    spending_for_age,
+)
 from .ufpls import _resolve_priority_list, _draw_pension_for_amount
 from .today_value import (
     TodayValueSettings,
@@ -178,6 +181,45 @@ def _indexed_earned_income(person, year, growth_rate_override=None):
     return person.income_until_retirement * (1 + rate) ** year
 
 
+def _effective_rate_series(settings, effective_fn, rate_path):
+    """Map a Monte Carlo per-year nominal growth path through the
+    today's-value transform, or return None when no path is attached.
+
+    Deterministic runs and legacy plans never attach a path, so the
+    scalar effective rate computed once at the top of `run_simulation`
+    remains authoritative there (byte-identical output). When the MC
+    sampler supplies `rate_path` (a list with one nominal rate per
+    simulation year), each element is transformed by `effective_fn` —
+    e.g. `effective_state_pension_growth` turns every element into 0.0
+    in today's-value mode, which is exactly what keeps State Pension
+    flat in today's view even with a stochastic path attached.
+    """
+    if isinstance(rate_path, (list, tuple)) and len(rate_path):
+        return [effective_fn(settings, float(r)) for r in rate_path]
+    return None
+
+
+def _indexed_payout(base, years_active, rate, rate_path, first_active_year):
+    """Apply an indexed income stream's growth for one simulation year.
+
+    Scalar mode (no `rate_path`): `base * (1 + rate) ** years_active` —
+    the legacy formula used for DB pensions. Path mode (Monte Carlo):
+    a cumulative product over the per-year effective rates actually
+    active since the stream started paying, so year-to-year indexation
+    variation compounds correctly instead of being approximated by a
+    single exponent.
+    """
+    if years_active <= 0:
+        return base
+    if rate_path is not None:
+        start = max(0, int(round(first_active_year)))
+        factor = 1.0
+        for r in rate_path[start : start + int(years_active)]:
+            factor *= (1 + float(r))
+        return base * factor
+    return base * (1 + rate) ** years_active
+
+
 
 
 def run_simulation(household, years=None):
@@ -262,6 +304,46 @@ def run_simulation(household, years=None):
     )
     p2_inc_eff = effective_income_growth(
         settings, household.person2.income_growth_rate
+    )
+
+    # Monte Carlo per-year growth paths (optional). When the MC sampler
+    # attaches `dc_growth_path` / `db_growth_path` /
+    # `state_pension_growth_path` to a person, each year of the loop uses
+    # that year's effective rate instead of the scalar above — this is
+    # what gives every simulation year its own market return / indexation
+    # instead of one fixed rate for the whole run. `None` for
+    # deterministic runs and legacy plans, preserving the scalar path
+    # byte-for-byte. Precomputed here (once, outside the year loop) so
+    # the loop body stays a cheap lookup.
+    p1_dc_eff_path = _effective_rate_series(
+        settings,
+        effective_dc_growth,
+        getattr(household.person1, "dc_growth_path", None),
+    )
+    p2_dc_eff_path = _effective_rate_series(
+        settings,
+        effective_dc_growth,
+        getattr(household.person2, "dc_growth_path", None),
+    )
+    p1_db_eff_path = _effective_rate_series(
+        settings,
+        effective_db_growth,
+        getattr(household.person1, "db_growth_path", None),
+    )
+    p2_db_eff_path = _effective_rate_series(
+        settings,
+        effective_db_growth,
+        getattr(household.person2, "db_growth_path", None),
+    )
+    p1_sp_eff_path = _effective_rate_series(
+        settings,
+        effective_state_pension_growth,
+        getattr(household.person1, "state_pension_growth_path", None),
+    )
+    p2_sp_eff_path = _effective_rate_series(
+        settings,
+        effective_state_pension_growth,
+        getattr(household.person2, "state_pension_growth_path", None),
     )
 
     results = {
@@ -387,7 +469,10 @@ def run_simulation(household, years=None):
             household.person1, year, growth_rate_override=p1_inc_eff
         )
         p1_sp_year = state_pension_income(
-            household.person1, year, growth_rate_override=p1_sp_eff
+            household.person1,
+            year,
+            growth_rate_override=p1_sp_eff,
+            growth_path=p1_sp_eff_path,
         )
         pension_income += p1_sp_year
         p1_gross = p1_earned_this_year + p1_sp_year
@@ -409,9 +494,12 @@ def run_simulation(household, years=None):
                 0,
                 (household.person1.age + year) - household.person1.draw_age,
             )
-            p1_db_income_year = (
-                household.person1.db_income
-                * (1 + p1_db_eff) ** p1_db_years_active
+            p1_db_income_year = _indexed_payout(
+                household.person1.db_income,
+                p1_db_years_active,
+                p1_db_eff,
+                p1_db_eff_path,
+                household.person1.draw_age - household.person1.age,
             )
             p1_gross += p1_db_income_year
             pension_income += p1_db_income_year
@@ -431,7 +519,10 @@ def run_simulation(household, years=None):
                 household.person2, year, growth_rate_override=p2_inc_eff
             )
             p2_sp_year = state_pension_income(
-                household.person2, year, growth_rate_override=p2_sp_eff
+                household.person2,
+                year,
+                growth_rate_override=p2_sp_eff,
+                growth_path=p2_sp_eff_path,
             )
             pension_income += p2_sp_year
             p2_gross = p2_earned_this_year + p2_sp_year
@@ -440,9 +531,12 @@ def run_simulation(household, years=None):
                     0,
                     (household.person2.age + year) - household.person2.draw_age,
                 )
-                p2_db_income_year = (
-                    household.person2.db_income
-                    * (1 + p2_db_eff) ** p2_db_years_active
+                p2_db_income_year = _indexed_payout(
+                    household.person2.db_income,
+                    p2_db_years_active,
+                    p2_db_eff,
+                    p2_db_eff_path,
+                    household.person2.draw_age - household.person2.age,
                 )
                 p2_gross += p2_db_income_year
                 pension_income += p2_db_income_year
@@ -572,16 +666,30 @@ def run_simulation(household, years=None):
         # is declared flat in today's-money terms too — the user
         # typically intends "£200/mo into the pension" as a real
         # figure, so it stays as-is (no deflator applied).
+        # Monte Carlo per-year DC rates: use `path[year]` when the sampler
+        # attached one (with a defensive length check), otherwise the
+        # scalar effective rate — identical behaviour for deterministic
+        # runs and legacy plans.
+        p1_dc_rate = (
+            p1_dc_eff_path[year]
+            if p1_dc_eff_path is not None and year < len(p1_dc_eff_path)
+            else p1_dc_eff
+        )
+        p2_dc_rate = (
+            p2_dc_eff_path[year]
+            if p2_dc_eff_path is not None and year < len(p2_dc_eff_path)
+            else p2_dc_eff
+        )
         household.person1.dc_pot = _dc_monthly_compound(
             household.person1.dc_pot,
-            p1_dc_eff,
+            p1_dc_rate,
             p1_M_for_year,
             fraction=p1_fraction,
         )
         if not single_retiree:
             household.person2.dc_pot = _dc_monthly_compound(
                 household.person2.dc_pot,
-                p2_dc_eff,
+                p2_dc_rate,
                 p2_M_for_year,
                 fraction=p2_fraction,
             )
@@ -613,10 +721,20 @@ def run_simulation(household, years=None):
         # OFF takes us back to the original 5%-on-Property growth
         # without any further changes.
         for asset in household.assets:
+            # Monte Carlo per-year asset returns: when the sampler attached
+            # `asset.growth_path`, use that year's rate so each simulation
+            # year gets its own sampled return (sequence-of-returns risk).
+            # Deterministic runs leave the path empty and use the scalar
+            # `growth_rate`, unchanged.
+            rate = asset.growth_rate
+            asset_growth_path = getattr(asset, "growth_path", None)
+            if (
+                isinstance(asset_growth_path, (list, tuple))
+                and year < len(asset_growth_path)
+            ):
+                rate = asset_growth_path[year]
             asset.value *= (
-                1 + effective_asset_growth(
-                    settings, asset.growth_rate, asset.asset_type
-                )
+                1 + effective_asset_growth(settings, rate, asset.asset_type)
             )
 
         # -------------------------
@@ -750,6 +868,18 @@ def run_simulation(household, years=None):
             and strategy != "Safe Withdrawal (4%)"
         ):
             spending = float(spending_target_path[year])
+        elif strategy == "Spending phases":
+            # Explicit age bands are intentionally easier to audit than a
+            # percentage taper. The amounts are stored in today's money and
+            # therefore stay flat within each band in today's-value mode.
+            # They also remain absolute amounts in nominal mode: this is the
+            # same simple contract users see on Quick Estimate.
+            spending = spending_for_age(
+                household.person1.age + year,
+                getattr(household, "spending_phases", []),
+                fallback_spending=household.spending_target,
+            )
+
         elif strategy == "Fixed":
             spending = household.spending_target
 
