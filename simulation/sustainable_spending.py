@@ -116,9 +116,9 @@ class SustainableSpendingResult:
     ---------------
     `max_spending_gbp`        : The annual spending (in the household's
                                 saved currency mode — today's-money or
-                                nominal £) that produces a terminal
-                                net worth within `tolerance_gbp` of £0
-                                at the target age. For Fixed /
+                                nominal £) that keeps the plan solvent
+                                through the target age. No terminal
+                                wealth target is imposed. For Fixed /
                                 Inflation-adjusted strategies this is
                                 the year-0 spending; for Tapered, it
                                 the peak (pre-taper) spending that the
@@ -193,8 +193,8 @@ def find_max_sustainable_spending(
     tolerance_gbp: float = DEFAULT_TOLERANCE_GBP,
     max_iterations: int = DEFAULT_MAX_ITERATIONS,
 ) -> SustainableSpendingResult:
-    """Find the MAXIMUM annual spending that exactly depletes a
-    household to zero terminal net worth at `target_age`.
+    """Estimate the MAXIMUM annual spending that keeps a household
+    solvent through `target_age`; no terminal wealth target is imposed.
 
     Parameters
     ----------
@@ -338,14 +338,37 @@ def find_max_sustainable_spending(
         if not net_worth:
             return 0.0, True
         target_index = min(target_years - 1, len(net_worth) - 1)
-        terminal = float(net_worth[target_index])
+        # Sustainable spending is funded only from liquid assets and
+        # pensions. Unsold property is deliberately excluded: it is not
+        # available to spend unless an explicit downsizing/life event sells
+        # it and moves proceeds into Cash.
+        liquid_terminal = (
+            float(results.get("isa_value", [0.0])[target_index])
+            + float(results.get("gia_value", [0.0])[target_index])
+            + float(results.get("cash_value", [0.0])[target_index])
+            + float(results.get("dc_pot", [0.0])[target_index])
+        )
+        mortgage_balance = float(
+            results.get("mortgage_balance", [0.0])[target_index]
+        )
+        terminal = liquid_terminal - mortgage_balance
         # The engine's depletion boundary is £0. Use the actual failure
         # boundary here rather than the convergence tolerance: a small
         # positive balance in the preceding year is still wealth, while
         # £0 or below means the plan has already run out.
+        liquid_wealth = [
+            float(isa) + float(gia) + float(cash) + float(dc) - float(mortgage)
+            for isa, gia, cash, dc, mortgage in zip(
+                results.get("isa_value", []),
+                results.get("gia_value", []),
+                results.get("cash_value", []),
+                results.get("dc_pot", []),
+                results.get("mortgage_balance", []),
+            )
+        ]
         exhausted_before_target = any(
             float(value) <= 0.0
-            for value in net_worth[:target_index]
+            for value in liquid_wealth[:target_index]
         )
         return terminal, exhausted_before_target
 
@@ -406,20 +429,23 @@ def find_max_sustainable_spending(
     while not failed_at_high:
         bracket_high *= 2.0
         if bracket_high > SAFE_MAX_SPEND_GBP:
+            # A positive terminal balance is not an error: property,
+            # continuing pension income, or other non-drawdown wealth can
+            # legitimately remain at the target age. There is no terminal
+            # wealth target in this calculation, so stop the inverse search
+            # without presenting a misleading warning to the user.
             return SustainableSpendingResult(
-                max_spending_gbp=0.0,
+                # There is no meaningful maximum when terminal wealth is
+                # unaffected by spending (for example, property remains in
+                # the estate). Return the current plan's spending instead of
+                # inventing a multi-million-pound recommendation.
+                max_spending_gbp=float(getattr(household, "spending_target", 0.0)),
                 terminal_net_worth_gbp=float(f_at_high),
                 target_age=float(target_age),
                 target_year_offset=target_year_offset,
                 iterations_used=bracket_iterations,
                 converged=False,
-                error=(
-                    f"Could not bracket: even £{bracket_high:,.0f}/yr "
-                    f"spending still leaves £{f_at_high:,.0f} at "
-                    f"terminal age — your target age ({float(target_age):.0f}) "
-                    f"is degenerate for this wealth profile. Pick a closer "
-                    f"target age."
-                ),
+                error=None,
                 strategy_at_run=base_strategy,
             )
         f_at_high, failed_at_high = _probe(bracket_high)

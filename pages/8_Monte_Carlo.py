@@ -123,7 +123,7 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
     failed = runs - passed
     st.write(
         f"**{mc['success_rate'] * 100:.1f}%** "
-        f"({passed} of {runs} runs) did not run out of money."
+        f"({passed} of {runs} runs) retained liquid funds through the end age."
     )
     if failed > 0:
         st.caption(
@@ -410,7 +410,9 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
             "is about £31,600 after the modelled tax, before any DC top-up. "
             "The Monte Carlo also varies investment returns, inflation and "
             "spending from run to run; a failure is recorded when year-end "
-            "nominal simulated net worth is £0 or below."
+            "the year's spending cannot be met by actual household income "
+            "and available drawdown. Unsold property is excluded because it "
+            "is not assumed to be sold to fund spending."
         )
 
     # -------------------------

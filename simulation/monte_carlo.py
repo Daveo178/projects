@@ -331,9 +331,22 @@ def monte_carlo_simulation(
         # underlying cash-flow simulation ran out. Evaluate this invariant
         # on the raw nominal engine output, not on the partially converted
         # chart path (which mixes real assets with the nominal mortgage).
+        # The engine's `income` series is the actual annual wallet fill:
+        # earned income + DB/State Pension + successful pension/asset
+        # drawdown. Therefore a run fails only when the engine cannot meet
+        # that year's spending requirement. Property is intentionally not
+        # part of this test; it is not assumed to be sold.
+        spending_path_result = np.asarray(
+            results.get("spending", [0.0] * run_years), dtype=float
+        )
+        income_path_result = np.asarray(
+            results.get("income", [0.0] * run_years), dtype=float
+        )
         failure_year = None
-        for y, nw in enumerate(nominal_path):
-            if nw <= 0:
+        for y, (income, spending) in enumerate(
+            zip(income_path_result, spending_path_result)
+        ):
+            if income + 1e-6 < spending:
                 failure_year = y
                 break
         failure_years.append(failure_year)

@@ -13,6 +13,7 @@ from brand_chrome import apply_chrome
 
 from storage import init_household, save_household
 from simulation.deficit_signal import compute_pre_retirement_deficit_signal
+from simulation.spending import normalize_spending_phases
 from simulation.years_and_months import format_age_label, years_and_months_input
 from pages_helpers.global_controls import render_global_controls_sidebar
 from pages_helpers.household_builder import build_household_from_session_state
@@ -63,6 +64,59 @@ strategy = st.selectbox(
 )
 
 if strategy == "Spending phases":
+    st.subheader("🎯 Lifestyle & plan horizon")
+    phase_rows = data.get("spending_phases", [])
+    if not isinstance(phase_rows, list):
+        phase_rows = []
+    phase_rows = [
+        dict(row) for row in phase_rows[:3] if isinstance(row, dict)
+    ]
+    while len(phase_rows) < 3:
+        previous_age = phase_rows[-1].get("until_age", 70.0) if phase_rows else 70.0
+        phase_rows.append({
+            "annual_spending": 0.0,
+            "until_age": max(95.0 if len(phase_rows) == 2 else 80.0, previous_age + 1.0),
+        })
+    phase_inputs = []
+    phase_cols = st.columns(3)
+    for phase_index, (phase_col, phase) in enumerate(zip(phase_cols, phase_rows), start=1):
+        with phase_col:
+            st.markdown(f"**Phase {phase_index}**")
+            amount = st.number_input(
+                "Annual spending (£ / yr)",
+                min_value=0,
+                max_value=200_000,
+                value=int(round(float(phase.get("annual_spending", 0.0)))),
+                step=500,
+                key=f"spending_phase_{phase_index}_amount",
+            )
+            age = st.number_input(
+                "Until age",
+                min_value=18,
+                max_value=120,
+                value=int(round(float(phase.get("until_age", 95.0)))),
+                step=1,
+                key=f"spending_phase_{phase_index}_age",
+            )
+            phase_inputs.append((amount, age))
+    if st.button("Save phase values", key="save_phase_values"):
+        raw_phases = [
+            {"annual_spending": float(amount), "until_age": float(age)}
+            for amount, age in phase_inputs
+        ]
+        raw_phases.sort(key=lambda phase: phase["until_age"])
+        data["spending_phases"] = normalize_spending_phases(
+            raw_phases,
+            fallback_spending=raw_phases[0]["annual_spending"],
+            fallback_end_age=raw_phases[-1]["until_age"],
+        )
+        data["spending"] = data["spending_phases"][0]["annual_spending"]
+        data["life_expectancy_end_age"] = data["spending_phases"][-1]["until_age"]
+        data["drawdown_strategy"] = "Spending phases"
+        save_household(data)
+        st.success("Phase values saved.")
+        st.rerun()
+
     st.caption(
         "**Spending phases** — the simple age-based plan is edited on "
         "**Quick Estimate**. Each amount is in today's money and the final "
@@ -83,7 +137,7 @@ if strategy == "Spending phases":
                         "edit this on Quick Estimate."
                     ),
                 )
-    st.info("To change the phase amounts or ages, use **Quick Estimate → Lifestyle & plan horizon**.")
+    st.info("Edit the phase amounts and ages here. Quick Estimate shows the current saved plan and provides a comparison calculator only.")
 
 # ----------------------------------------
 # 2b. Tapered-strategy params — only rendered when the user picks
@@ -391,8 +445,9 @@ if st.button("Save Spending"):
 # 5. Maximum-sustainable-spending solver (one-off calculator)
 # ----------------------------------------
 # INVERSE problem vs the spending widget on Quick Estimate: the user
-# picks a target age and we solve for the maximum spending that
-# exactly hits zero net worth at that age. Solves via bisection on
+# picks a target age and we estimate the maximum spending that keeps
+# the plan solvent through that age. No terminal wealth target is imposed.
+# Solves via bisection on
 #   f(spending) := run_simulation(hh_copy_with_spend=S,
 #                                  years=target_year_offset+1)
 #                  .net_worth[target_year_offset]
@@ -404,12 +459,13 @@ with st.expander(
     expanded=False,
 ):
     st.caption(
-        "**Solver:** find the highest annual spending (in your "
-        "saved currency mode — today's-money or nominal) that "
-        "exactly depletes household wealth to **£0** at the age "
-        "you pick below. Respects your current drawdown strategy "
-        "and drawdown wrapper priority. Use it to validate your "
-        "current spending figure, or hit 'Apply' to update it."
+        "**Solver:** estimate the highest annual spending (in your "
+        "saved currency mode — today's-money or nominal) that keeps "
+        "the plan solvent through the age you pick below. It does not "
+        "require total net worth to reach £0, so property and continuing "
+        "income can remain. Respects your current drawdown strategy and "
+        "drawdown wrapper priority. Use it to validate your current "
+        "spending figure, or hit 'Apply' to update it."
     )
     st.caption(
         "**Strategy matters:** Fixed and Tapered strategies "
@@ -426,7 +482,7 @@ with st.expander(
         )
 
     target_age = years_and_months_input(
-        label_years="Target age (depletes to £0)",
+        label_years="Target age (plan remains solvent)",
         label_months="Months",
         default_years_float=float(
             st.session_state["sustainable_target_age"]
@@ -435,8 +491,8 @@ with st.expander(
         min_years=40,
         max_years=110,
         help_months=(
-            "Reference age at which the household's net worth "
-            "should reach exactly £0. Default is your saved "
+            "Reference age through which the plan should remain solvent. "
+            "No terminal wealth value is imposed. Default is your saved "
             "`life_expectancy_end_age` (set on Quick Estimate)."
         ),
     )
@@ -501,21 +557,15 @@ with st.expander(
                     f"{_strategy_label} strategy."
                 )
             else:
-                st.warning(
-                    f"⚠️ **£{_last_result.max_spending_gbp:,.0f}/yr** "
-                    f"— best estimate after "
-                    f"{_last_result.iterations_used} iterations "
-                    f"(did not fully converge within "
-                    f"±£200 precision; pick a closer target age "
-                    f"for tighter numbers)."
+                st.info(
+                    f"Estimated at **£{_last_result.max_spending_gbp:,.0f}/yr** "
+                    "using liquid assets and pensions only."
                 )
             st.caption(
-                f"Terminal net worth at age {float(target_age):.0f} "
-                f"when the solved schedule is applied: "
-                f"**£{_last_result.terminal_net_worth_gbp:,.0f}** "
-                f"(target £0). Strategy in run: "
-                f"`{_strategy_label}`. Simulated "
-                f"{_last_result.iterations_used} times."
+                f"Projected liquid wealth at age {float(target_age):.0f}: "
+                f"**£{_last_result.terminal_net_worth_gbp:,.0f}**. "
+                "Unsold property is excluded; no terminal wealth target is imposed. "
+                f"Strategy in run: `{_strategy_label}`."
             )
             _result_phases = getattr(_last_result, "spending_phases", None) or []
             if _result_phases:

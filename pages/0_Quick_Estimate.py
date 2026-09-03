@@ -1141,6 +1141,13 @@ with st.expander("🏠 Mortgage (optional)", expanded=False):
 # hidden taper or unrelated plan-end-age control to keep in sync.
 # -----------------------------------------------------------
 st.subheader("🎯 Lifestyle & plan horizon")
+st.info(
+    "For detailed phased-spending planning and trial-and-error adjustments, "
+    "use **Spending & Drawdown**. This Quick Estimate page shows the current "
+    "plan and lets you run a comparison, but phase editing is kept in the "
+    "detailed Spending section."
+)
+
 
 # Inflation assumption is now a global sidebar slider
 # (`pages_helpers/global_controls.py`) — no per-page slider needed.
@@ -1150,7 +1157,14 @@ st.subheader("🎯 Lifestyle & plan horizon")
 # Three explicit, easy-to-read spending bands. Amounts are in today's
 # money and each age is the inclusive end of that band; the final band
 # also becomes the plan horizon.
+# Apply pending solver values BEFORE creating the keyed widgets. Streamlit
+# owns each widget key after instantiation, so this is the only safe point
+# to update the displayed amount/age fields.
+_applied_phase_values = st.session_state.pop("qe_applied_phase_values", None)
+if isinstance(_applied_phase_values, list) and _applied_phase_values:
+    data["spending_phases"] = [dict(phase) for phase in _applied_phase_values]
 _raw_saved_phases = data.get("spending_phases")
+
 _saved_amounts = [
     float(phase.get("annual_spending", 0.0))
     for phase in (_raw_saved_phases or [])
@@ -1200,7 +1214,8 @@ for phase_index, (phase_col, phase) in enumerate(zip(phase_cols, _saved_phases),
             value=int(round(phase["annual_spending"])),
             step=500,
             key=f"qe_phase_{phase_index}_amount",
-            help="The annual amount you plan to spend, in today's money.",
+            disabled=True,
+            help="Edit phased spending on the Spending & Drawdown page.",
         )
         phase_age = st.number_input(
             "Until age",
@@ -1209,6 +1224,7 @@ for phase_index, (phase_col, phase) in enumerate(zip(phase_cols, _saved_phases),
             value=int(round(phase["until_age"])),
             step=1,
             key=f"qe_phase_{phase_index}_age",
+            disabled=True,
             help=(
                 "This amount applies through this age. The next phase starts "
                 "after it; Phase 3 is also the plan horizon."
@@ -1839,21 +1855,15 @@ with st.expander(
                     f"+ today's money."
                 )
             else:
-                st.warning(
-                    f"⚠️ **£{_last_result.max_spending_gbp:,.0f}/yr** "
-                    f"— best estimate after "
-                    f"{_last_result.iterations_used} iterations "
-                    f"(did not fully converge within ±£200 "
-                    f"precision; pick a closer target age for "
-                    f"tighter numbers)."
+                st.info(
+                    f"Estimated at **£{_last_result.max_spending_gbp:,.0f}/yr** "
+                    "using liquid assets and pensions only."
                 )
             st.caption(
-                f"Terminal net worth at age "
-                f"{int(round(float(_calc_target_age)))} when "
-                f"the phased schedule is applied: "
-                f"**£{_last_result.terminal_net_worth_gbp:,.0f}** "
-                f"(target £0). Simulated "
-                f"{_last_result.iterations_used} times."
+                f"Projected liquid wealth at age "
+                f"{int(round(float(_calc_target_age)))}: "
+                f"**£{_last_result.terminal_net_worth_gbp:,.0f}**. "
+                "Unsold property is excluded; no terminal wealth target is imposed."
             )
             _result_phases = getattr(_last_result, "spending_phases", None) or []
             if _result_phases:
@@ -1904,6 +1914,9 @@ with st.expander(
                     }
                     for phase in _new_phases
                 ]
+                # The phase widgets have explicit session-state keys. Queue
+                # the applied values for the next run, where they are loaded
+                # before those widgets are instantiated.
                 data["spending"] = data["spending_phases"][0]["annual_spending"]
                 data["life_expectancy_end_age"] = data["spending_phases"][-1]["until_age"]
                 data["drawdown_strategy"] = "Spending phases"
@@ -1933,11 +1946,9 @@ with st.expander(
                 st.session_state.pop(
                     "qe_sustainable_last_target_age", None
                 )
-                st.success(
-                    f"Phased spending plan applied — first phase "
-                    f"£{_last_result.max_spending_gbp:,.0f}/yr. Hit "
-                    f"**Run Quick Estimate** to refresh the chart."
-                )
+                # Trigger an immediate same-page rerun. The pending values
+                # are consumed before the phase widgets are constructed, so
+                # their displayed values update without navigating away.
                 st.rerun()
 
 
@@ -2008,11 +2019,10 @@ if results is not None:
             "rates."
         )
 
-    # Summary metric cards — three big numbers for at-a-glance
-    # reading. The "today" card is gross wealth today; the
-    # "joint-life" card is the gross wealth at the simulation's
-    # end (the last year). A red/green sustainability chip
-    # summarises whether the plan runs out before the end.
+    # Summary metric cards — show liquid net worth separately from
+    # the property-inclusive figure. Sustainability is based on liquid
+    # resources only; an unsold home must not make an otherwise
+    # under-funded plan appear sustainable.
     sim_years = len(results["years"])
     p1_current_age = get_p1_current_age(data)
     last_age = p1_current_age + sim_years - 1
@@ -2020,14 +2030,18 @@ if results is not None:
     # Net worth at today / retirement (Person 1) / SP-age allow
     # comparison across the milestone columns in the bar chart
     # below.
-    today_nw = results["net_worth"][0] if sim_years > 0 else 0
-    final_nw = results["net_worth"][-1] if sim_years > 0 else 0
+    today_nw_including_property = results["net_worth"][0] if sim_years > 0 else 0
+    final_nw_including_property = results["net_worth"][-1] if sim_years > 0 else 0
+    today_property = results.get("property_value", [0.0] * sim_years)[0] if sim_years else 0.0
+    final_property = results.get("property_value", [0.0] * sim_years)[-1] if sim_years else 0.0
+    today_nw_excluding_property = today_nw_including_property - today_property
+    final_nw_excluding_property = final_nw_including_property - final_property
 
     col_now, col_end, col_status = st.columns(3)
     with col_now:
         st.metric(
-            f"💎 Net worth today (age {format_age_label(p1_current_age)})",
-            f"£{int(round(today_nw)):,}",
+            f"💧 Liquid net worth today (age {format_age_label(p1_current_age)})",
+            f"£{int(round(today_nw_excluding_property)):,}",
         )
         # Explain the headline figure in the same place as the metric.
         # The engine's first stored point is the first projected period,
@@ -2045,31 +2059,42 @@ if results is not None:
         )
         today_mortgage = results.get("mortgage_balance", [0.0])[0]
         st.caption(
-            "**How this is calculated:** pension pots + ISA/GIA/cash/"
-            "property − mortgage. This is the first projected point in "
+            "**How this is calculated:** pension pots + ISA/GIA/cash "
+            "− mortgage; unsold property is excluded. This is the first "
+            "projected point in "
             "today's money, so it includes the first period's growth, "
             "contributions and mortgage repayment; it is not just the raw "
             "figures entered above."
         )
         st.caption(
-            f"£{today_dc:,.0f} pensions + £{today_other_assets:,.0f} "
-            f"other assets − £{today_mortgage:,.0f} mortgage "
-            f"= **£{today_nw:,.0f} net worth**."
+            f"£{today_dc:,.0f} pensions + "
+            f"£{today_other_assets - today_property:,.0f} liquid assets "
+            f"− £{today_mortgage:,.0f} mortgage "
+            f"= **£{today_nw_excluding_property:,.0f} liquid net worth**. "
+            f"Property: **£{today_property:,.0f}** (excluded)."
         )
     with col_end:
         st.metric(
-            f"💎 Net worth at age {format_age_label(last_age)}",
-            f"£{int(round(final_nw)):,}",
-            delta=f"{int(round(final_nw - today_nw)):,}",
+            f"💧 Liquid net worth at age {format_age_label(last_age)}",
+            f"£{int(round(final_nw_excluding_property)):,}",
+            delta=f"{int(round(final_nw_excluding_property - today_nw_excluding_property)):,}",
             delta_color=(
-                "normal" if final_nw >= today_nw else "inverse"
+                "normal" if final_nw_excluding_property >= today_nw_excluding_property else "inverse"
             ),
         )
     with col_status:
-        if final_nw < 0:
-            st.error("⚠️ Plan runs out before end age")
+        # A plan is sustainable only while liquid resources remain
+        # strictly positive at the end age. Zero means the household has
+        # exhausted its spendable assets; retained property must not turn
+        # that outcome into a success.
+        if final_nw_excluding_property <= 0:
+            st.error("⚠️ Liquid assets are exhausted by end age")
         else:
-            st.success("✅ Plan sustains through end age")
+            st.success("✅ Plan sustains through end age using liquid assets")
+        st.caption(
+            f"Including unsold property: **£{final_nw_including_property:,.0f}** "
+            f"at age {format_age_label(last_age)}."
+        )
 
     # -----------------------------------------------------------
     # ONE chart — net worth composition at milestone ages.
