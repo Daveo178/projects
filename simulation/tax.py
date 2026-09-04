@@ -1,19 +1,33 @@
-def uk_income_tax(earned_income, taxable_drawdown=0):
+def uk_income_tax(earned_income, taxable_drawdown=0, tax_band_factor=1.0):
     """
     UK income tax model (2024/25).
     earned_income = salary + DB + state pension
     taxable_drawdown = taxable portion of DC withdrawals (UFPLS)
+
+    ``tax_band_factor`` optionally indexes the monetary thresholds by the
+    same cumulative inflation factor as a nominal projection. This keeps
+    nominal Monte Carlo paths currency-consistent: pension income and
+    spending rise with inflation, while the tax allowances and bands rise
+    with it too. The default of 1.0 preserves the deterministic model and
+    existing callers.
     """
+    try:
+        factor = max(0.0, float(tax_band_factor))
+    except (TypeError, ValueError):
+        factor = 1.0
+    if factor == 0.0:
+        factor = 1.0
 
     total_taxable_income = earned_income + taxable_drawdown
 
-    personal_allowance = 12570
-    basic_rate_limit = 50270
-    higher_rate_limit = 125140
+    personal_allowance = 12570 * factor
+    basic_rate_limit = 50270 * factor
+    higher_rate_limit = 125140 * factor
+    personal_allowance_taper_start = 100000 * factor
 
     # Personal allowance tapering
-    if total_taxable_income > 100000:
-        reduction = (total_taxable_income - 100000) // 2
+    if total_taxable_income > personal_allowance_taper_start:
+        reduction = (total_taxable_income - personal_allowance_taper_start) // 2
         personal_allowance = max(0, personal_allowance - reduction)
 
     taxable = max(0, total_taxable_income - personal_allowance)

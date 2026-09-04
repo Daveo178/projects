@@ -1,9 +1,11 @@
 """Monte Carlo simulation with optional today's-money output.
 
 The stochastic engine runs each path in nominal pounds so sampled market
-returns and sampled inflation are not double-adjusted. When the caller asks
-for today's-money output, the completed path is converted component-by-
-component using that path's cumulative inflation:
+returns and sampled inflation are not double-adjusted. Monetary tax thresholds
+are indexed by each path's cumulative inflation, avoiding artificial fiscal
+drag in nominal paths. When the caller asks for today's-money output, the
+completed path is converted component-by-component using that path's
+cumulative inflation:
 
 * DC, ISA, GIA, Cash and Property are deflated by cumulative sampled
   inflation so the displayed wealth is in one consistent real-terms basis.
@@ -31,13 +33,15 @@ from .spending import (
 
 # Standard deviation used around the user's pension growth-rate inputs when
 # the MC samples year-by-year values. DC gets the most dispersion (markets
-# are volatile); DB indexation is tied to inflation / triple-lock policy
-# and has far less dispersion. State Pension has no dispersion of its own:
-# it is indexed to that run's sampled inflation path (triple-lock-style
-# behaviour), which also keeps it flat in today's-value mode.
+# are volatile). DB payments are assumed guaranteed by default: the saved
+# DB indexation rate is used without annual noise unless the user explicitly
+# selects a non-zero DB volatility range. State Pension has no dispersion of
+# its own; it is indexed to that run's sampled inflation path
+# (triple-lock-style behaviour), which also keeps it flat in today's-value
+# mode.
 DC_RATE_MC_STD = 0.05
-DB_RATE_MC_STD = 0.01
-INCOME_RATE_MC_STD = 0.01  # Wage inflation volatility — same magnitude as DB indexation.
+DB_RATE_MC_STD = 0.0
+INCOME_RATE_MC_STD = 0.01  # Wage inflation volatility.
 
 # Floor applied to each sampled DC growth year. With std=0.05 around a
 # default user mean of 0.05, ~16% of sampled years would otherwise be
@@ -47,6 +51,20 @@ INCOME_RATE_MC_STD = 0.01  # Wage inflation volatility — same magnitude as DB 
 DC_RATE_FLOOR = -0.30
 
 DEFAULT_RUNS = 1000
+
+# Optional one-off early-retirement stress range. It is off in the balanced
+# baseline because ordinary annual DC volatility already includes first-year
+# market risk. Users can enable it for a deliberately harsher sequence test.
+DEFAULT_FIRST_YEAR_DC_SHOCK_RANGE = (0.0, 0.0)
+
+# Occasional-cost defaults are deliberately conservative planning prompts,
+# rather than forecasts. Each category's probability is per year and its
+# amount is a today-money range; an occurrence is inflation-linked in the
+# nominal MC path and charged in addition to the selected spending plan.
+DEFAULT_OCCASIONAL_COSTS = {
+    "house": {"label": "House repairs", "probability": (0.03, 0.07), "amount": (5_000.0, 25_000.0)},
+    "car": {"label": "Car replacement / major repairs", "probability": (0.08, 0.15), "amount": (8_000.0, 30_000.0)},            "major": {"label": "Major one-off costs", "probability": (0.01, 0.03), "amount": (10_000.0, 50_000.0)},
+}
 
 # Annual return assumptions (mean, stdev)
 RETURN_ASSUMPTIONS = {
@@ -64,8 +82,112 @@ INFLATION_STD = 0.01
 # Spending shock assumptions
 SPENDING_SHOCK_STD = 0.05  # ±5% random variation
 
+# Suggested UI ranges for the standard deviations used by each stochastic
+# impact. The midpoint of each range is based on the original model
+# assumptions; the bounds let users decide how much uncertainty to include.
+# These are expressed as decimals (0.05 = 5 percentage points).
+DEFAULT_VOLATILITY_RANGES = {
+    "dc": (0.06, 0.09),
+    "isa_gia": (0.06, 0.09),
+    "property": (0.03, 0.06),
+    "cash": (0.0025, 0.0075),
+    "inflation": (0.0075, 0.015),
+    # Annual spending variability is off for the balanced baseline. Users can
+    # enable it as a lifestyle-uncertainty stress test; occasional repairs
+    # and replacements have a separate event-based model below.
+    "spending": (0.0, 0.0),
+    # DB pension payments are guaranteed in the baseline. Set a non-zero
+    # range on the Monte Carlo page only to stress the scheme's indexation
+    # assumption; the saved DB amount itself is never randomly reduced.
+    "db": (0.0, 0.0),
+    "income": (0.0075, 0.015),
+}
 
-def randomised_growth_rates(asset_means=None):
+
+def _normalise_range(value, fallback):
+    """Return a finite, ordered ``(low, high)`` decimal range."""
+    try:
+        low, high = value
+        low, high = float(low), float(high)
+    except (TypeError, ValueError):
+        return fallback
+    if not np.isfinite(low) or not np.isfinite(high):
+        return fallback
+    return max(0.0, min(low, high)), max(0.0, max(low, high))
+
+
+def _resolve_volatility_ranges(volatility_ranges):
+    """Resolve caller-supplied volatility bounds with legacy fallbacks."""
+    legacy = {
+        "dc": (DC_RATE_MC_STD, DC_RATE_MC_STD),
+        "isa_gia": (RETURN_ASSUMPTIONS["ISA"][1], RETURN_ASSUMPTIONS["ISA"][1]),
+        "property": (RETURN_ASSUMPTIONS["Property"][1], RETURN_ASSUMPTIONS["Property"][1]),
+        "cash": (RETURN_ASSUMPTIONS["Cash"][1], RETURN_ASSUMPTIONS["Cash"][1]),
+        "inflation": (INFLATION_STD, INFLATION_STD),
+        "spending": (SPENDING_SHOCK_STD, SPENDING_SHOCK_STD),
+        "db": (DB_RATE_MC_STD, DB_RATE_MC_STD),
+        "income": (INCOME_RATE_MC_STD, INCOME_RATE_MC_STD),
+    }
+    supplied = volatility_ranges or {}
+    return {
+        key: _normalise_range(supplied.get(key), fallback)
+        for key, fallback in legacy.items()
+    }
+
+
+def _sample_volatilities(volatility_ranges):
+    """Choose one SD for each impact for the current simulation run."""
+    return {
+        key: float(np.random.uniform(low, high))
+        for key, (low, high) in volatility_ranges.items()
+    }
+
+
+def _sample_occasional_costs(
+    run_years,
+    inflation_path,
+    retirement_offsets,
+    occasional_costs,
+):
+    """Sample one-off retirement costs for a single nominal MC path.
+
+    Each enabled category can produce at most one event per year. Its
+    occurrence probability is sampled once per run from the configured range;
+    each occurrence then receives a fresh amount from that category's range.
+    Costs are expressed in today's pounds and inflated by the path's
+    cumulative inflation. ``retirement_offsets`` starts the model when the
+    first partner retires, so working-life expenses are unaffected.
+    """
+    cumulative_inflation = np.cumprod(1.0 + np.asarray(inflation_path))
+    post_retirement = np.arange(run_years) >= max(
+        0.0,
+        min(retirement_offsets),
+    )
+    cost_path = np.zeros(run_years)
+    events = []
+    for key, settings in occasional_costs.items():
+        if not settings["enabled"]:
+            continue
+        probability_low, probability_high = settings["probability"]
+        amount_low, amount_high = settings["amount"]
+        probability = float(np.random.uniform(probability_low, probability_high))
+        occurrence = (
+            np.random.random(run_years) < probability
+        ) & post_retirement
+        amounts = np.random.uniform(amount_low, amount_high, run_years)
+        nominal_costs = amounts * cumulative_inflation
+        cost_path += occurrence * nominal_costs
+        for year, happened in enumerate(occurrence):
+            if happened:
+                events.append({
+                    "year": year,
+                    "category": key,
+                    "amount": float(nominal_costs[year]),
+                })
+    return cost_path, events
+
+
+def randomised_growth_rates(asset_means=None, volatility_by_type=None):
     """Generate one stochastic nominal growth rate per asset class.
 
     ``asset_means`` comes from the household being simulated. Keeping the
@@ -75,10 +197,14 @@ def randomised_growth_rates(asset_means=None):
     remain fallbacks for asset classes absent from a legacy household.
     """
     asset_means = asset_means or {}
+    volatility_by_type = volatility_by_type or {}
     rates = {}
     for asset_type, (fallback_mean, std) in RETURN_ASSUMPTIONS.items():
         mean = asset_means.get(asset_type, fallback_mean)
-        rates[asset_type] = np.random.normal(mean, std)
+        rates[asset_type] = np.random.normal(
+            mean,
+            volatility_by_type.get(asset_type, std),
+        )
     return rates
 
 
@@ -101,6 +227,9 @@ def monte_carlo_simulation(
     years=None,
     *,
     today_value_mode=False,
+    volatility_ranges=None,
+    first_year_dc_shock_range=(0.0, 0.0),
+    occasional_costs=None,
 ):
     """Run `runs` MC paths and return percentile bands of net worth.
 
@@ -118,6 +247,23 @@ def monte_carlo_simulation(
         If true, convert each completed nominal path to today's money using
         its own sampled cumulative inflation path. Defaults to false so
         existing callers (including What-If) retain nominal MC output.
+    volatility_ranges : dict, optional
+        Lower/upper bounds for the standard deviation of each stochastic
+        impact. Bounds are sampled once per run. Supported keys are ``dc``,
+        ``isa_gia``, ``property``, ``cash``, ``inflation``, ``spending``,
+        ``db`` and ``income``. When omitted, legacy fixed standard
+        deviations are retained for API compatibility.
+    first_year_dc_shock_range : tuple, optional
+        Lower/upper percentage drop applied once to both DC pots at the
+        beginning of the first simulated year. Values are decimals, so
+        ``(0.0, 0.20)`` represents a random 0%–20% first-year shock. Pass
+        ``(0.0, 0.0)`` to disable it.
+    occasional_costs : dict, optional
+        Optional event-based expense settings. Supported categories are
+        ``house``, ``car`` and ``major``. Each value may contain ``enabled``,
+        ``probability`` and ``amount`` lower/upper decimal ranges. Probability
+        is the chance of one event in each year; amount is in today's pounds.
+        Occasional costs are disabled when omitted.
     """
     all_paths = []
     failure_years = []
@@ -133,6 +279,28 @@ def monte_carlo_simulation(
     inflation_mean = float(
         getattr(household, "inflation_rate", INFLATION_MEAN)
     )
+    resolved_volatility_ranges = _resolve_volatility_ranges(
+        volatility_ranges
+    )
+    first_year_shock_low, first_year_shock_high = _normalise_range(
+        first_year_dc_shock_range,
+        DEFAULT_FIRST_YEAR_DC_SHOCK_RANGE,
+    )
+    resolved_occasional_costs = {}
+    for key, defaults in DEFAULT_OCCASIONAL_COSTS.items():
+        supplied = (occasional_costs or {}).get(key, {})
+        if not isinstance(supplied, dict):
+            supplied = {}
+        resolved_occasional_costs[key] = {
+            "label": defaults["label"],
+            "enabled": bool(supplied.get("enabled", False)),
+            "probability": _normalise_range(
+                supplied.get("probability"), defaults["probability"]
+            ),
+            "amount": _normalise_range(
+                supplied.get("amount"), defaults["amount"]
+            ),
+        }
 
     for run_index in range(runs):
         h = deepcopy(household)
@@ -140,7 +308,10 @@ def monte_carlo_simulation(
         # Run the internal engine path nominally. The optional today-value
         # conversion is applied after the path completes, using that path's
         # own sampled inflation; this avoids mixing the deterministic
-        # household inflation setting with the stochastic MC path.
+        # household inflation setting with the stochastic MC path. Tax bands
+        # are indexed by the same cumulative inflation path so the nominal
+        # run does not manufacture fiscal drag merely because future pounds
+        # are larger.
         h.show_in_todays_value = False
 
         # Reset PCLS state for the simulation run
@@ -154,12 +325,27 @@ def monte_carlo_simulation(
         # best/worst-case paths all share an axis on that assumption.
         # Varied horizons would crash `np.array(all_paths)` with
         # "inhomogeneous shape after 1 dimensions" (1k-run reproduction).
-        inflation_path = np.random.normal(
-            inflation_mean, INFLATION_STD, run_years
+        sampled_volatilities = _sample_volatilities(
+            resolved_volatility_ranges
         )
-        spending_shocks = np.random.normal(1.0, SPENDING_SHOCK_STD, run_years)
+        inflation_path = np.random.normal(
+            inflation_mean, sampled_volatilities["inflation"], run_years
+        )
+        spending_shocks = np.random.normal(
+            1.0, sampled_volatilities["spending"], run_years
+        )
+        asset_volatility_by_type = {
+            "ISA": sampled_volatilities["isa_gia"],
+            "GIA": sampled_volatilities["isa_gia"],
+            "Property": sampled_volatilities["property"],
+            "Cash": sampled_volatilities["cash"],
+            "DC": sampled_volatilities["dc"],
+        }
         growth_paths = [
-            randomised_growth_rates(asset_means)
+            randomised_growth_rates(
+                asset_means,
+                asset_volatility_by_type,
+            )
             for _ in range(run_years)
         ]
 
@@ -172,9 +358,10 @@ def monte_carlo_simulation(
         # DC: fresh sample every year around the user's mean, floored at
         # `DC_RATE_FLOOR` so a single bad draw cannot collapse the pot over
         # a 30–45-year horizon (see DC_RATE_FLOOR comment).
-        # DB: fresh sample every year around the user's mean with narrow
-        # indexation volatility — the user's rate stays the mean, only the
-        # year-to-year dispersion is stochastic.
+        # DB: fresh sample every year around the user's mean with optional
+        # indexation volatility. The default range is 0%–0% because the DB
+        # amount is assumed guaranteed; a user can deliberately add noise
+        # to stress the indexation assumption.
         # State Pension: NO separate sampling — it is triple-lock /
         # inflation-linked, so it tracks that run's sampled inflation path
         # exactly. The engine's today's-value transform then keeps it flat
@@ -184,29 +371,46 @@ def monte_carlo_simulation(
         h.person1.dc_growth_path = np.maximum(
             DC_RATE_FLOOR,
             np.random.normal(
-                h.person1.dc_growth_rate, DC_RATE_MC_STD, run_years
+                h.person1.dc_growth_rate,
+                sampled_volatilities["dc"],
+                run_years,
             ),
         ).tolist()
         h.person2.dc_growth_path = np.maximum(
             DC_RATE_FLOOR,
             np.random.normal(
-                h.person2.dc_growth_rate, DC_RATE_MC_STD, run_years
+                h.person2.dc_growth_rate,
+                sampled_volatilities["dc"],
+                run_years,
             ),
         ).tolist()
         h.person1.db_growth_path = np.random.normal(
-            h.person1.db_growth_rate, DB_RATE_MC_STD, run_years
+            h.person1.db_growth_rate,
+            sampled_volatilities["db"],
+            run_years,
         ).tolist()
         h.person2.db_growth_path = np.random.normal(
-            h.person2.db_growth_rate, DB_RATE_MC_STD, run_years
+            h.person2.db_growth_rate,
+            sampled_volatilities["db"],
+            run_years,
         ).tolist()
         h.person1.state_pension_growth_path = inflation_path.tolist()
         h.person2.state_pension_growth_path = inflation_path.tolist()
         h.person1.income_growth_rate = np.random.normal(
-            h.person1.income_growth_rate, INCOME_RATE_MC_STD
+            h.person1.income_growth_rate, sampled_volatilities["income"]
         )
         h.person2.income_growth_rate = np.random.normal(
-            h.person2.income_growth_rate, INCOME_RATE_MC_STD
+            h.person2.income_growth_rate, sampled_volatilities["income"]
         )
+
+        # Apply the one-off first-year DC shock before year 0's normal
+        # investment growth. It is sampled per run, not repeated annually.
+        first_year_dc_shock = float(
+            np.random.uniform(first_year_shock_low, first_year_shock_high)
+        )
+        h.person1.dc_pot *= 1.0 - first_year_dc_shock
+        if not bool(getattr(h, "single_retiree", False)):
+            h.person2.dc_pot *= 1.0 - first_year_dc_shock
 
         # Always simulate the same nominal stochastic path in both display
         # modes. Today's-value mode is a presentation conversion below; it
@@ -220,7 +424,60 @@ def monte_carlo_simulation(
 
         base_spending = h.spending_target
         cumulative_inflation = np.cumprod(1.0 + inflation_path)
+
+        # Pension amounts in the plan are today's-money starting amounts.
+        # A nominal MC path must therefore uplift a pension before its
+        # payment starts, just as it uplifts the spending phases. Without
+        # this, a DB pension or State Pension beginning at age 60/67 is
+        # incorrectly paid at its today's-money amount in future pounds,
+        # creating an artificial shortfall in the 60s–90s. In today's-money
+        # display mode the completed wealth path is deflated again, so the
+        # same nominal cash-flow treatment remains currency-consistent.
+        def _start_date_inflation_factor(start_age):
+            offset = max(0, int(round(float(start_age) - h.person1.age)))
+            if offset == 0:
+                return 1.0
+            return float(cumulative_inflation[min(offset - 1, run_years - 1)])
+
+        h.person1.db_base_factor = _start_date_inflation_factor(
+            h.person1.draw_age
+        )
+        h.person2.db_base_factor = _start_date_inflation_factor(
+            h.person2.draw_age
+        )
+        h.person1.state_pension_base_factor = _start_date_inflation_factor(
+            h.person1.state_pension_age
+        )
+        h.person2.state_pension_base_factor = _start_date_inflation_factor(
+            h.person2.state_pension_age
+        )
+
+        # Generate enabled retirement-cost categories once for this path.
+        # The first partner's retirement opens the household's retirement
+        # spending window, matching the engine's `any_retired` drawdown gate.
+        retirement_offsets = [
+            h.person1.retirement_age - h.person1.age,
+        ]
+        if not bool(getattr(h, "single_retiree", False)):
+            retirement_offsets.append(
+                h.person2.retirement_age - h.person2.age
+            )
+        occasional_cost_path, occasional_cost_events = _sample_occasional_costs(
+            run_years,
+            inflation_path,
+            retirement_offsets,
+            resolved_occasional_costs,
+        )
+        # Tax allowances and bands are monetary thresholds. Index them by
+        # the same path-specific cumulative inflation used for nominal
+        # pensions and spending, otherwise the nominal MC path introduces
+        # fiscal drag that is absent from the deterministic today's-money
+        # projection. This path is consumed by the engine for each year.
+        h.tax_band_factor_path = cumulative_inflation.tolist()
         strategy = getattr(h, "drawdown_strategy", "Fixed")
+        # Keep this path attached for every strategy, including Safe
+        # Withdrawal. The engine adds it after resolving the base target.
+        h.occasional_cost_path = occasional_cost_path.tolist()
         if strategy == "Safe Withdrawal (4%)":
             h.spending_target_path = None
         else:
@@ -363,6 +620,8 @@ def monte_carlo_simulation(
                     "Failure year": failure_year,
                     "Inflation": float(inflation_path[year]),
                     "Spending shock": float(spending_shocks[year]),
+                    "Occasional costs": float(occasional_cost_path[year]),
+                    "First-year DC shock": first_year_dc_shock,
                     "ISA return": float(growth_path["ISA"]),
                     "GIA return": float(growth_path["GIA"]),
                     "Cash return": float(growth_path["Cash"]),
@@ -390,6 +649,7 @@ def monte_carlo_simulation(
 
         inflation_stats = _path_stats(inflation_path)
         spending_stats = _path_stats(spending_shocks)
+        occasional_cost_stats = _path_stats(occasional_cost_path)
         asset_stats = {
             asset_type: _path_stats(
                 [growth_path.get(asset_type, np.nan) for growth_path in growth_paths]
@@ -441,6 +701,18 @@ def monte_carlo_simulation(
             "Spending shock mean": spending_stats[0],
             "Spending shock min": spending_stats[1],
             "Spending shock max": spending_stats[2],
+            "Occasional costs mean": occasional_cost_stats[0],
+            "Occasional costs max": occasional_cost_stats[2],
+            "Occasional cost events": len(occasional_cost_events),
+            "First-year DC shock": first_year_dc_shock,
+            "DC volatility": sampled_volatilities["dc"],
+            "ISA/GIA volatility": sampled_volatilities["isa_gia"],
+            "Property volatility": sampled_volatilities["property"],
+            "Cash volatility": sampled_volatilities["cash"],
+            "Inflation volatility": sampled_volatilities["inflation"],
+            "Spending volatility": sampled_volatilities["spending"],
+            "DB volatility": sampled_volatilities["db"],
+            "Income volatility": sampled_volatilities["income"],
             "ISA return mean": asset_stats["ISA"][0],
             "ISA return min": asset_stats["ISA"][1],
             "ISA return max": asset_stats["ISA"][2],

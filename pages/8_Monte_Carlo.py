@@ -4,7 +4,12 @@ import pandas as pd
 import numpy as np
 import altair as alt
 
-from simulation.monte_carlo import monte_carlo_simulation
+from simulation.monte_carlo import (
+    DEFAULT_FIRST_YEAR_DC_SHOCK_RANGE,
+    DEFAULT_OCCASIONAL_COSTS,
+    DEFAULT_VOLATILITY_RANGES,
+    monte_carlo_simulation,
+)
 from simulation.charts import failure_age_histogram, to_int_pounds
 from simulation.years_and_months import format_age_label, get_p1_current_age
 from storage import init_household
@@ -21,7 +26,7 @@ This page runs a full Monte Carlo simulation of your retirement plan.
 It uses:
 - Randomised investment returns  
 - Randomised inflation  
-- Randomised spending shocks  
+- Optional occasional house, car and major repair costs
 - Sequence‑of‑returns risk  
 - 1000 independent simulation runs  
 
@@ -69,6 +74,187 @@ household = build_household_from_session_state()
 p1_current_age = get_p1_current_age(data)
 
 # -------------------------
+# Monte Carlo assumptions
+# -------------------------
+# Each lower/upper pair controls the standard-deviation range for one
+# stochastic impact. The SD is sampled once per run, then annual outcomes
+# are sampled from that run's chosen distribution. This preserves genuine
+# year-to-year randomness even when the two bounds are equal.
+def _impact_range_controls(key, label, max_pct):
+    default_low, default_high = DEFAULT_VOLATILITY_RANGES[key]
+    low_col, high_col = st.columns(2)
+    with low_col:
+        low_pct = st.slider(
+            f"{label} — lower SD (%)",
+            min_value=0.0,
+            max_value=float(max_pct),
+            value=float(default_low * 100.0),
+            step=0.25,
+            key=f"mc_{key}_vol_low",
+        )
+    with high_col:
+        high_pct = st.slider(
+            f"{label} — higher SD (%)",
+            min_value=0.0,
+            max_value=float(max_pct),
+            value=float(default_high * 100.0),
+            step=0.25,
+            key=f"mc_{key}_vol_high",
+        )
+    return low_pct / 100.0, high_pct / 100.0
+
+
+with st.expander("⚙️ Monte Carlo assumptions and ranges", expanded=True):
+    st.caption(
+        "Suggested ranges are for a diversified/balanced UK retirement "
+        "portfolio, not forecasts. Each run randomly selects a standard "
+        "deviation inside each range, then samples a new outcome every "
+        "year. Annual spending variability is off by default. DB income "
+        "is treated as secure by default; set its range above zero only "
+        "to stress its indexation."
+    )
+    if st.button("↩️ Reset Monte Carlo settings to suggested defaults", key="mc_reset_defaults"):
+        for key in list(st.session_state):
+            if key.startswith("mc_"):
+                del st.session_state[key]
+        st.rerun()
+
+    st.markdown("**Investment-return volatility**")
+    dc_volatility = _impact_range_controls("dc", "DC pension returns", 15.0)
+    isa_gia_volatility = _impact_range_controls(
+        "isa_gia", "ISA / GIA returns", 25.0
+    )
+    property_volatility = _impact_range_controls(
+        "property", "Property returns", 20.0
+    )
+    cash_volatility = _impact_range_controls("cash", "Cash returns", 10.0)
+
+    st.markdown("**Economic and income volatility**")
+    inflation_volatility = _impact_range_controls(
+        "inflation", "Inflation", 10.0
+    )
+    db_volatility = _impact_range_controls(
+        "db", "DB indexation", 10.0
+    )
+    income_volatility = _impact_range_controls(
+        "income", "Wage growth", 10.0
+    )
+
+    st.markdown("**Annual lifestyle variability**")
+    spending_volatility = _impact_range_controls(
+        "spending", "Annual spending", 20.0
+    )
+    st.caption(
+        "This varies the whole lifestyle budget every year. It is not a "
+        "repair reserve. The balanced baseline is 0%; use the optional "
+        "occasional-cost model below for repairs and replacements."
+    )
+
+    st.markdown("**Optional occasional costs**")
+    st.caption(
+        "Each enabled category has a per-year chance of one cost. The "
+        "probability and cost size are each sampled once per run, then a "
+        "fresh occurrence and amount are drawn by year. Amounts are in "
+        "today's money and rise with the run's inflation path."
+    )
+
+    def _occasional_cost_controls(key):
+        defaults = DEFAULT_OCCASIONAL_COSTS[key]
+        enabled = st.checkbox(
+            f"Include {defaults['label'].lower()}",
+            value=False,
+            key=f"mc_occasional_{key}_enabled",
+        )
+        probability_col, amount_col = st.columns(2)
+        with probability_col:
+            st.caption("Chance in each year")
+            probability_low = st.number_input(
+                "Lower probability (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(defaults["probability"][0] * 100.0),
+                step=1.0,
+                key=f"mc_occasional_{key}_prob_low",
+            )
+            probability_high = st.number_input(
+                "Higher probability (%)",
+                min_value=0.0,
+                max_value=100.0,
+                value=float(defaults["probability"][1] * 100.0),
+                step=1.0,
+                key=f"mc_occasional_{key}_prob_high",
+            )
+        with amount_col:
+            st.caption("Cost size in today's pounds")
+            amount_low = st.number_input(
+                "Lower cost (£)",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=float(defaults["amount"][0]),
+                step=1_000.0,
+                key=f"mc_occasional_{key}_amount_low",
+            )
+            amount_high = st.number_input(
+                "Higher cost (£)",
+                min_value=0.0,
+                max_value=1_000_000.0,
+                value=float(defaults["amount"][1]),
+                step=1_000.0,
+                key=f"mc_occasional_{key}_amount_high",
+            )
+        return {
+            "enabled": enabled,
+            "probability": (probability_low / 100.0, probability_high / 100.0),
+            "amount": (amount_low, amount_high),
+        }
+
+    occasional_costs = {
+        key: _occasional_cost_controls(key)
+        for key in DEFAULT_OCCASIONAL_COSTS
+    }
+
+    st.markdown("**One-off first-year DC stress**")
+    shock_low_col, shock_high_col = st.columns(2)
+    with shock_low_col:
+        shock_low_pct = st.slider(
+            "First-year DC drop — lower (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=0.0,
+            step=0.5,
+            key="mc_first_year_dc_shock_low",
+        )
+    with shock_high_col:
+        shock_high_pct = st.slider(
+            "First-year DC drop — higher (%)",
+            min_value=0.0,
+            max_value=20.0,
+            value=float(DEFAULT_FIRST_YEAR_DC_SHOCK_RANGE[1] * 100.0),
+            step=0.5,
+            key="mc_first_year_dc_shock_high",
+        )
+    first_year_dc_shock = (
+        shock_low_pct / 100.0,
+        shock_high_pct / 100.0,
+    )
+    st.caption(
+        "The first-year DC drop is sampled once per run and applied once to "
+        "both DC pots before normal first-year growth. It is off by default; "
+        "use 0–10% as a moderate stress test or 0–20% as a severe one."
+    )
+
+    volatility_ranges = {
+        "dc": dc_volatility,
+        "isa_gia": isa_gia_volatility,
+        "property": property_volatility,
+        "cash": cash_volatility,
+        "inflation": inflation_volatility,
+        "spending": spending_volatility,
+        "db": db_volatility,
+        "income": income_volatility,
+    }
+
+# -------------------------
 # Run Monte Carlo
 # -------------------------
 runs = st.number_input("Number of Monte Carlo runs", 100, 5000, 1000, key="mc_runs")
@@ -79,9 +265,30 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
             household,
             runs=runs,
             today_value_mode=bool(data.get("show_in_todays_value", False)),
+            volatility_ranges=volatility_ranges,
+            first_year_dc_shock_range=first_year_dc_shock,
+            occasional_costs=occasional_costs,
         )
 
     st.success("Monte Carlo simulation complete!")
+
+    if household.drawdown_strategy == "Spending phases":
+        phase_summary = "; ".join(
+            f"£{phase.get('annual_spending', 0):,.0f} until age "
+            f"{phase.get('until_age', 0):g}"
+            for phase in household.spending_phases
+            if isinstance(phase, dict)
+        )
+        st.info(
+            "Monte Carlo is using these saved spending phases: "
+            f"{phase_summary}. Annual lifestyle variability is set to "
+            f"{spending_volatility[0] * 100:.2g}%–"
+            f"{spending_volatility[1] * 100:.2g}% SD. "
+            "Optional repair and replacement costs are added separately "
+            "only when their category is enabled; no category is enabled by "
+            "default."
+        )
+
     if data.get("show_in_todays_value", False):
         st.caption(
             "All Monte Carlo wealth figures below are in today's money. "
@@ -409,9 +616,9 @@ if st.button("Run Monte Carlo Simulation", key="run_mc"):
             "available for spending. For example, £33,600 of gross pensions "
             "is about £31,600 after the modelled tax, before any DC top-up. "
             "The Monte Carlo also varies investment returns, inflation and "
-            "spending from run to run; a failure is recorded when year-end "
-            "the year's spending cannot be met by actual household income "
-            "and available drawdown. Unsold property is excluded because it "
+            "spending from run to run; a failure is recorded when the year's "
+            "spending cannot be met by actual household income and available "
+            "drawdown. Unsold property is excluded because it "
             "is not assumed to be sold to fund spending."
         )
 

@@ -87,6 +87,7 @@ def _draw_pension_for_amount(
     p2_gross,
     p1_tax_result_top,
     p2_tax_result_top,
+    tax_band_factor=1.0,
 ):
     """Run the Pension waterfall (PCLS / UFPLS) for `amount` from
     the household's DC pot. Returns a 5-tuple
@@ -210,10 +211,14 @@ def _draw_pension_for_amount(
 
     # ----- Tax recompute with ACTUAL UFPLS draw ---------------
     new_p1_tax = uk_income_tax(
-        p1_gross, taxable_drawdown=p1_taxable_taken
+        p1_gross,
+        taxable_drawdown=p1_taxable_taken,
+        tax_band_factor=tax_band_factor,
     )
     new_p2_tax = uk_income_tax(
-        p2_gross, taxable_drawdown=p2_taxable_taken
+        p2_gross,
+        taxable_drawdown=p2_taxable_taken,
+        tax_band_factor=tax_band_factor,
     )
 
     # Take-home contribution from UFPLS taxable portion = gross

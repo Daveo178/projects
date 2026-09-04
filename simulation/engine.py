@@ -199,7 +199,14 @@ def _effective_rate_series(settings, effective_fn, rate_path):
     return None
 
 
-def _indexed_payout(base, years_active, rate, rate_path, first_active_year):
+def _indexed_payout(
+    base,
+    years_active,
+    rate,
+    rate_path,
+    first_active_year,
+    base_factor=1.0,
+):
     """Apply an indexed income stream's growth for one simulation year.
 
     Scalar mode (no `rate_path`): `base * (1 + rate) ** years_active` —
@@ -210,14 +217,14 @@ def _indexed_payout(base, years_active, rate, rate_path, first_active_year):
     single exponent.
     """
     if years_active <= 0:
-        return base
+        return base * float(base_factor)
     if rate_path is not None:
         start = max(0, int(round(first_active_year)))
         factor = 1.0
         for r in rate_path[start : start + int(years_active)]:
             factor *= (1 + float(r))
-        return base * factor
-    return base * (1 + rate) ** years_active
+        return base * float(base_factor) * factor
+    return base * float(base_factor) * (1 + rate) ** years_active
 
 
 
@@ -366,6 +373,7 @@ def run_simulation(household, years=None):
         "net_worth": [],
         "income": [],
         "spending": [],
+        "occasional_cost": [],
         "dc_pot": [],
         "isa_value": [],
         "gia_value": [],
@@ -454,6 +462,21 @@ def run_simulation(household, years=None):
                             # Timeline page can show how pension income
                             # creeps up over the retirement horizon.
 
+        # Monte Carlo nominal paths can carry an inflation-indexed tax-band
+        # factor. Without this, inflation raises pensions and spending while
+        # the fixed 2024/25 allowances and bands stay frozen, creating an
+        # artificial fiscal-drag failure in otherwise real-terms-sustainable
+        # plans. Deterministic and legacy runs have no path and retain 1.0.
+        tax_band_factor_path = getattr(
+            household, "tax_band_factor_path", None
+        )
+        tax_band_factor = (
+            float(tax_band_factor_path[year])
+            if isinstance(tax_band_factor_path, (list, tuple))
+            and year < len(tax_band_factor_path)
+            else 1.0
+        )
+
         # Person 1 — pre-retirement earned income is wage-inflation indexed
         # from "now" (year 0) via `income_growth_rate` (default 2.5%). The same
         # indexed figure is also stored in `earned_income` for charting and
@@ -473,6 +496,9 @@ def run_simulation(household, years=None):
             year,
             growth_rate_override=p1_sp_eff,
             growth_path=p1_sp_eff_path,
+            base_factor=getattr(
+                household.person1, "state_pension_base_factor", 1.0
+            ),
         )
         pension_income += p1_sp_year
         p1_gross = p1_earned_this_year + p1_sp_year
@@ -500,6 +526,9 @@ def run_simulation(household, years=None):
                 p1_db_eff,
                 p1_db_eff_path,
                 household.person1.draw_age - household.person1.age,
+                base_factor=getattr(
+                    household.person1, "db_base_factor", 1.0
+                ),
             )
             p1_gross += p1_db_income_year
             pension_income += p1_db_income_year
@@ -523,6 +552,9 @@ def run_simulation(household, years=None):
                 year,
                 growth_rate_override=p2_sp_eff,
                 growth_path=p2_sp_eff_path,
+                base_factor=getattr(
+                    household.person2, "state_pension_base_factor", 1.0
+                ),
             )
             pension_income += p2_sp_year
             p2_gross = p2_earned_this_year + p2_sp_year
@@ -537,6 +569,9 @@ def run_simulation(household, years=None):
                     p2_db_eff,
                     p2_db_eff_path,
                     household.person2.draw_age - household.person2.age,
+                    base_factor=getattr(
+                        household.person2, "db_base_factor", 1.0
+                    ),
                 )
                 p2_gross += p2_db_income_year
                 pension_income += p2_db_income_year
@@ -550,8 +585,12 @@ def run_simulation(household, years=None):
         # "p1_tax + p2_tax". See tests/test_tax.py for the math.
         gross_income = p1_gross + p2_gross
         from .tax import uk_income_tax
-        p1_tax_result = uk_income_tax(p1_gross)
-        p2_tax_result = uk_income_tax(p2_gross)
+        p1_tax_result = uk_income_tax(
+            p1_gross, tax_band_factor=tax_band_factor
+        )
+        p2_tax_result = uk_income_tax(
+            p2_gross, tax_band_factor=tax_band_factor
+        )
         # NI applies ONLY to earned salary — never to DB, SP, or UFPLS.
         # The `_indexed_earned_income` helper already returns 0 from
         # retirement, so this naturally yields £0 NI for retirees.
@@ -1011,6 +1050,21 @@ def run_simulation(household, years=None):
         else:
             spending = household.spending_target
 
+        # Optional Monte Carlo event-based costs are kept separate from the
+        # ordinary lifestyle target, but are funded through the same wallet.
+        # The path is nominal because Monte Carlo runs the engine nominally;
+        # deterministic runs have no path and therefore add zero.
+        occasional_cost_path = getattr(
+            household, "occasional_cost_path", None
+        )
+        occasional_cost = (
+            float(occasional_cost_path[year])
+            if isinstance(occasional_cost_path, (list, tuple))
+            and year < len(occasional_cost_path)
+            else 0.0
+        )
+        spending += occasional_cost
+
         # -------------------------
         # 7. Drawdown if needed (phantom-safe UFPLS + per-source split)
         #    Total outgoings = spending target + mortgage payment this year —
@@ -1144,10 +1198,14 @@ def run_simulation(household, years=None):
             # household actually receives `total_need` after tax.
             def _cumulative_take_home() -> float:
                 p1t = uk_income_tax(
-                    p1_gross, taxable_drawdown=cumulative_p1_taxable
+                    p1_gross,
+                    taxable_drawdown=cumulative_p1_taxable,
+                    tax_band_factor=tax_band_factor,
                 )
                 p2t = uk_income_tax(
-                    p2_gross, taxable_drawdown=cumulative_p2_taxable
+                    p2_gross,
+                    taxable_drawdown=cumulative_p2_taxable,
+                    tax_band_factor=tax_band_factor,
                 )
                 take_home = taxable_draw - (
                     max(0.0, p1t["tax"] - p1_tax_result_top["tax"])
@@ -1230,6 +1288,7 @@ def run_simulation(household, years=None):
                             p2_gross,
                             p1_tax_result_top,
                             p2_tax_result_top,
+                            tax_band_factor=tax_band_factor,
                         )
                         # ACCUMULATE across multiple Pension calls
                         # (rather than overwriting). First call
@@ -1302,10 +1361,14 @@ def run_simulation(household, years=None):
             # written to `results["income"]` and the UFPLS series
             # must use the corrected cumulative tax.
             p1_tax_result = uk_income_tax(
-                p1_gross, taxable_drawdown=cumulative_p1_taxable
+                p1_gross,
+                taxable_drawdown=cumulative_p1_taxable,
+                tax_band_factor=tax_band_factor,
             )
             p2_tax_result = uk_income_tax(
-                p2_gross, taxable_drawdown=cumulative_p2_taxable
+                p2_gross,
+                taxable_drawdown=cumulative_p2_taxable,
+                tax_band_factor=tax_band_factor,
             )
             ufpls_take_home = taxable_draw - (
                 max(0.0, p1_tax_result["tax"] - p1_tax_result_top["tax"])
@@ -1479,6 +1542,7 @@ def run_simulation(household, years=None):
         results["net_worth"].append(net_worth)
         results["income"].append(income)
         results["spending"].append(spending)
+        results["occasional_cost"].append(occasional_cost)
 
         # Asset breakdown
         isa = sum(a.value for a in household.assets if a.asset_type == "ISA")

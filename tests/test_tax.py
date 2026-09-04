@@ -167,6 +167,15 @@ class TestPerSpouseTaxFunction(unittest.TestCase):
         # £80k+£80k test) — just assert the inequality direction.
         self.assertNotAlmostEqual(per_spouse_tax, old_joint_tax)
 
+    def test_tax_thresholds_can_be_inflation_indexed(self):
+        """Scaling both income and monetary thresholds preserves the
+        effective tax result; this is used by nominal MC paths so inflation
+        does not create artificial fiscal drag."""
+        base = uk_income_tax(30_000)
+        indexed = uk_income_tax(60_000, tax_band_factor=2.0)
+        self.assertAlmostEqual(indexed["tax"], base["tax"] * 2.0, places=6)
+        self.assertAlmostEqual(indexed["net"], base["net"] * 2.0, places=6)
+
     def test_zero_income_both_partners_yields_zero_tax(self):
         for _ in range(3):
             self.assertEqual(

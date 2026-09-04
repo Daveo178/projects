@@ -378,6 +378,215 @@ class TestMonteCarloPerYearGrowthPaths(unittest.TestCase):
         expected = 100_000.0 * (1 + 0.05 / 12) ** 36
         self.assertAlmostEqual(results["dc_pot"][-1], expected, places=2)
 
+    def test_default_db_volatility_is_zero_for_guaranteed_db_income(self):
+        """The suggested baseline does not randomly reduce DB indexation."""
+        from simulation.monte_carlo import DEFAULT_VOLATILITY_RANGES
+
+        self.assertEqual(DEFAULT_VOLATILITY_RANGES["db"], (0.0, 0.0))
+
+    def test_nominal_pensions_are_indexed_before_their_start_date(self):
+        """Nominal MC uplifts today's-money pension bases before payment.
+
+        A pension beginning next year must not start at the same nominal
+        pounds as today's value; otherwise inflation-indexed spending is
+        overstated relative to guaranteed income and creates false failures.
+        """
+        h = _minimal_household()
+        h.person1.age = 65.0
+        h.person1.retirement_age = 60.0
+        h.person1.draw_age = 65.0
+        h.person1.db_income = 10_000.0
+        h.person1.state_pension_age = 66.0
+        h.spending_target = 0.0
+
+        zero_volatility = {
+            key: (0.0, 0.0) for key in (
+                "dc", "isa_gia", "property", "cash", "inflation",
+                "spending", "db", "income",
+            )
+        }
+        result = monte_carlo_simulation(
+            h,
+            runs=1,
+            years=3,
+            volatility_ranges=zero_volatility,
+        )
+
+        # State Pension starts in year 1, after one 2.5% inflation year.
+        self.assertAlmostEqual(result["run_diagnostics"][0]["Inflation mean"], 0.025)
+        self.assertAlmostEqual(result["all_paths"][0][1], 0.0, places=6)
+
+        # Inspect the engine output directly through the public MC diagnostic
+        # contract by making the guaranteed income sufficient for spending in
+        # a second run; the pension start amount is reflected in the path's
+        # annual funding requirement rather than a reduced DC balance.
+        h.spending_target = 11_275.0
+        funded = monte_carlo_simulation(
+            h,
+            runs=1,
+            years=2,
+            volatility_ranges=zero_volatility,
+        )
+        self.assertEqual(funded["failure_years"], [None])
+
+    def test_custom_volatility_ranges_are_sampled_per_run(self):
+        """Custom lower/upper bounds reach diagnostics and preserve
+        annual randomness when the bounds are non-zero."""
+        _seed()
+        h = _minimal_household()
+        result = monte_carlo_simulation(
+            h,
+            runs=4,
+            years=10,
+            volatility_ranges={
+                "dc": (0.04, 0.06),
+                "isa_gia": (0.08, 0.12),
+                "property": (0.04, 0.06),
+                "cash": (0.005, 0.015),
+                "inflation": (0.0075, 0.0125),
+                "spending": (0.03, 0.07),
+                "db": (0.0075, 0.0125),
+                "income": (0.0075, 0.0125),
+            },
+        )
+        for row in result["run_diagnostics"]:
+            self.assertGreaterEqual(row["DC volatility"], 0.04)
+            self.assertLessEqual(row["DC volatility"], 0.06)
+            self.assertGreaterEqual(row["Spending volatility"], 0.03)
+            self.assertLessEqual(row["Spending volatility"], 0.07)
+        self.assertLess(
+            result["run_diagnostics"][0]["P1 DC growth min"],
+            result["run_diagnostics"][0]["P1 DC growth max"],
+        )
+
+    def test_occasional_costs_are_optional_and_inflation_linked(self):
+        """A guaranteed cost is charged once in its selected year path.
+
+        The event model must remain disabled for legacy callers, and an
+        enabled cost must increase the spending requirement without becoming
+        a recurring annual charge.
+        """
+        _seed()
+        no_cost_household = _minimal_household()
+        no_cost_household.person1.age = 65.0
+        no_cost_household.person1.retirement_age = 60.0
+        no_cost_household.person1.dc_pot = 100_000.0
+        no_cost = monte_carlo_simulation(
+            no_cost_household,
+            runs=1,
+            years=4,
+            volatility_ranges={key: (0.0, 0.0) for key in (
+                "dc", "isa_gia", "property", "cash", "inflation",
+                "spending", "db", "income",
+            )},
+        )
+
+        _seed()
+        cost_household = _minimal_household()
+        cost_household.person1.age = 65.0
+        cost_household.person1.retirement_age = 60.0
+        cost_household.person1.dc_pot = 100_000.0
+        with_cost = monte_carlo_simulation(
+            cost_household,
+            runs=1,
+            years=4,
+            volatility_ranges={key: (0.0, 0.0) for key in (
+                "dc", "isa_gia", "property", "cash", "inflation",
+                "spending", "db", "income",
+            )},
+            occasional_costs={
+                "house": {
+                    "enabled": True,
+                    "probability": (1.0, 1.0),
+                    "amount": (1_000.0, 1_000.0),
+                },
+            },
+        )
+
+        costs = with_cost["run_diagnostics"][0]
+        self.assertEqual(costs["Occasional cost events"], 4)
+        self.assertLess(
+            with_cost["all_paths"][0][-1],
+            no_cost["all_paths"][0][-1],
+        )
+        self.assertEqual(with_cost["failure_years"], [None])
+        self.assertAlmostEqual(
+            with_cost["run_diagnostics"][0]["Occasional costs mean"],
+            1_000.0,
+            delta=100.0,
+        )
+        self.assertAlmostEqual(
+            with_cost["run_diagnostics"][0]["Occasional costs max"],
+            1_000.0 * 1.025 ** 3,
+            delta=100.0,
+        )
+
+    def test_occasional_costs_do_not_apply_before_retirement(self):
+        """Working-life years do not receive retirement repair costs."""
+        _seed()
+        household = _minimal_household()
+        result = monte_carlo_simulation(
+            household,
+            runs=1,
+            years=4,
+            volatility_ranges={key: (0.0, 0.0) for key in (
+                "dc", "isa_gia", "property", "cash", "inflation",
+                "spending", "db", "income",
+            )},
+            occasional_costs={
+                "car": {
+                    "enabled": True,
+                    "probability": (1.0, 1.0),
+                    "amount": (2_000.0, 2_000.0),
+                },
+            },
+        )
+        self.assertEqual(
+            result["run_diagnostics"][0]["Occasional cost events"],
+            0,
+        )
+        self.assertEqual(result["run_diagnostics"][0]["Occasional costs mean"], 0.0)
+
+    def test_first_year_dc_shock_is_one_off_and_range_is_honoured(self):
+        """A fixed 20% shock reduces the opening DC pot once, rather
+        than reducing it by 20% in every simulated year."""
+        _seed()
+        no_shock_household = _minimal_household()
+        no_shock_household.person1.dc_pot = 100_000.0
+        no_shock = monte_carlo_simulation(
+            no_shock_household,
+            runs=1,
+            years=5,
+            volatility_ranges={key: (0.0, 0.0) for key in (
+                "dc", "isa_gia", "property", "cash", "inflation",
+                "spending", "db", "income",
+            )},
+            first_year_dc_shock_range=(0.0, 0.0),
+        )
+        _seed()
+        with_shock_household = _minimal_household()
+        with_shock_household.person1.dc_pot = 100_000.0
+        with_shock = monte_carlo_simulation(
+            with_shock_household,
+            runs=1,
+            years=5,
+            volatility_ranges={key: (0.0, 0.0) for key in (
+                "dc", "isa_gia", "property", "cash", "inflation",
+                "spending", "db", "income",
+            )},
+            first_year_dc_shock_range=(0.20, 0.20),
+        )
+        self.assertAlmostEqual(
+            with_shock["run_diagnostics"][0]["First-year DC shock"],
+            0.20,
+        )
+        self.assertLess(
+            with_shock["all_paths"][0][-1],
+            no_shock["all_paths"][0][-1],
+        )
+        # The source household is not modified by either MC run.
+        self.assertEqual(_minimal_household().person1.dc_pot, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

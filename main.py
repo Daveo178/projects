@@ -155,22 +155,26 @@ with st.expander("📘 How to use the planner and how the engine works", expande
     st.markdown("### Monte Carlo assumptions and ranges")
     st.markdown(
         "The Monte Carlo page runs 100–5,000 paths, with 1,000 by default. "
-        "The table shows the current model settings and the approximate "
-        "95% range implied by the normal distributions. These are not hard "
-        "limits unless a floor is explicitly shown."
+        "Its assumptions panel provides lower and higher standard-deviation "
+        "sliders for each impact. Each run selects a volatility inside those "
+        "bounds, then samples a fresh annual outcome, so runs remain random. "
+        "The figures below are suggested starting ranges, not hard limits "
+        "unless a floor is explicitly shown."
     )
     st.markdown(
         "| Variable | Current app setting | Approx. modelled range | Broad professional-style planning band* |\n"
         "|---|---|---:|---:|\n"
-        "| ISA / GIA annual return | User mean; default 5%, 10% SD | About -15% to +25% at default | About 3%–8% return; 6%–20% volatility depending on portfolio |\n"
-        "| DC pension growth | User mean, sampled fresh each year; 5 percentage-point SD; -30% floor | Single-year user rate ± about 10 percentage points at 95% | About 3%–8% return; 6%–20% volatility depending on asset mix |\n"
-        "| Property annual return | Default 2%, 5% SD | About -8% to +12% at default | About 3%–7% return; commonly higher volatility than this model |\n"
-        "| Cash annual return | Default 1%, 1% SD | About -1% to +3% at default | About 1%–4% return; usually low volatility |\n"
-        "| Inflation | Default 2.5%, 1 percentage-point SD each year | About 0.5%–4.5% at 95% | Roughly 2%–4% central planning range, with wider stress tests |\n"
-        "| DB growth | User mean, sampled fresh each year; 1 percentage-point SD | Single-year user rate ± about 2 percentage points at 95% | Usually linked to explicit inflation or policy assumptions |\n"
-        "| State Pension growth | Indexed to that run's sampled inflation each year; flat in today's-money view | Tracks the sampled inflation band (about 0.5%–4.5% at 95%) | Usually linked to explicit inflation or policy assumptions |\n"
-        "| Wage growth | User rate, sampled once per run; 1 percentage-point SD | User rate ± about 2 percentage points at 95% | Usually linked to explicit inflation or policy assumptions |\n"
-        "| Spending shock | Independent 5% SD each year | About 90%–110% of that year’s planned spend at 95% | No universal standard; advisers often use explicit spending scenarios and one-off costs |"
+        "| ISA / GIA annual return | User mean; suggested 6%–9% SD range for a balanced allocation | About ±12%–18% around the user mean at 95% | Depends on equity/bond mix, fees and currency exposure |\n"
+        "| DC pension growth | User mean; suggested 6%–9% SD range; -30% annual floor | About ±12%–18% around the user mean at 95% | Depends on the pension's asset allocation and de-risking |\n"
+        "| Property annual return | User mean; suggested 3%–6% SD range | About ±6%–12% around the user mean at 95% | Illiquid and location-specific; not a traded portfolio return |\n"
+        "| Cash annual return | User mean; suggested 0.25%–0.75% SD range | About ±0.5%–1.5% around the user mean at 95% | Low volatility, but reinvestment and rate risk remain |\n"
+        "| Inflation | User assumption; suggested 0.75%–1.5% SD range each year | About ±1.5%–3% around the assumption at 95% | A scenario range, not a forecast of CPI/RPI policy |\n"
+        "| DB growth | User mean; suggested 0.25%–0.75% SD range | About ±0.5%–1.5% around the user mean at 95% | Usually follows scheme-specific CPI/RPI caps and rules |\n"
+        "| State Pension growth | Indexed to that run's sampled inflation each year; flat in today's-money view | Tracks the sampled inflation path | Usually linked to policy and earnings/inflation rules |\n"
+        "| Wage growth | User rate; suggested 0.75%–1.5% SD range, sampled once per run | User rate ± about 1.5%–3% at 95% | Highly personal and employment-dependent |\n"
+        "| Annual spending variability | 0% SD baseline; optional lifestyle stress range | No variation at baseline; user-selected stress otherwise | Better separated from occasional repair/replacement costs |\n"
+        "| Occasional costs | Off by default; optional house, car and major-cost event ranges | Per-year occurrence and today-money cost ranges | Useful for explicit contingency modelling, not a forecast |\n"
+        "| First-year DC drop | Off by default; optional one-off range up to 20% | One random drop once at the beginning of each run | Deliberate sequence-of-returns stress test, not a forecast |"
     )
     st.caption(
         "*The professional-style column is a broad comparison guide, not a "
@@ -185,12 +189,16 @@ with st.expander("📘 How to use the planner and how the engine works", expande
         "asset correlations or inflation/return correlation. DC growth is "
         "sampled fresh each year too; DB indexation is sampled annually "
         "around the user's rate; State Pension growth is linked to the "
-        "sampled inflation path; wage growth is sampled once per run. Tax, "
-        "charges, GIA capital gains tax, mortality, care costs and "
-        "investment allocation changes are not randomised. Success currently "
-        "means year-end total modelled net worth stays above zero; property "
-        "can therefore contribute to the success result even though it is not "
-        "normally drawn down."
+        "sampled inflation path; wage growth is sampled once per run. The "
+        "Monte Carlo assumptions panel lets users vary the lower and higher "
+        "standard-deviation bounds for each impact, add occasional house/car/major "
+        "cost events and add a one-off first-year DC drop. Tax thresholds are "
+        "inflation-indexed on nominal Monte Carlo "
+        "paths so inflation does not create artificial fiscal drag. Charges, GIA "
+        "capital gains tax, mortality, care costs and investment allocation "
+        "changes are not randomised. Success currently means each year's "
+        "spending requirement is met from actual after-tax income and "
+        "available drawdown; unsold property is excluded from that test."
     )
     st.markdown(
         "Use the results as a **general personal planning guide** and compare "
@@ -205,7 +213,9 @@ with st.expander("📘 How to use the planner and how the engine works", expande
         "entitlement, scheme-specific pension rule, investment fee, sequence "
         "of returns detail, GIA capital gain, inheritance-tax treatment or "
         "care-cost scenario. Monte Carlo adds randomised returns, inflation "
-        "and spending shocks, but it is still only a range of modelled outcomes."
+        "and optional annual spending variability, occasional costs and first-year "
+        "DC stress, but "
+        "it is still only a range of modelled outcomes."
     )
 
 # A tiny status hint so the user knows how their plan is held.
