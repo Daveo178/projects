@@ -80,6 +80,19 @@ p1_current_age = get_p1_current_age(data)
 # stochastic impact. The SD is sampled once per run, then annual outcomes
 # are sampled from that run's chosen distribution. This preserves genuine
 # year-to-year randomness even when the two bounds are equal.
+# Streamlit widget state must be changed before the keyed widgets are created.
+# The callback only sets a flag; the next script pass removes the old values
+# before rendering the sliders and number inputs again.
+def _request_mc_settings_reset():
+    st.session_state["_mc_reset_requested"] = True
+
+
+if st.session_state.pop("_mc_reset_requested", False):
+    for key in list(st.session_state):
+        if key.startswith("mc_") and key != "mc_reset_defaults":
+            del st.session_state[key]
+
+
 def _impact_range_controls(key, label, max_pct):
     default_low, default_high = DEFAULT_VOLATILITY_RANGES[key]
     low_col, high_col = st.columns(2)
@@ -113,11 +126,12 @@ with st.expander("⚙️ Monte Carlo assumptions and ranges", expanded=True):
         "is treated as secure by default; set its range above zero only "
         "to stress its indexation."
     )
-    if st.button("↩️ Reset Monte Carlo settings to suggested defaults", key="mc_reset_defaults"):
-        for key in list(st.session_state):
-            if key.startswith("mc_"):
-                del st.session_state[key]
-        st.rerun()
+    if st.button(
+        "↩️ Reset Monte Carlo settings to suggested defaults",
+        key="mc_reset_defaults",
+        on_click=_request_mc_settings_reset,
+    ):
+        pass
 
     st.markdown("**Investment-return volatility**")
     dc_volatility = _impact_range_controls("dc", "DC pension returns", 15.0)

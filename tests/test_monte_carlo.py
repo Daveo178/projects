@@ -416,11 +416,11 @@ class TestMonteCarloPerYearGrowthPaths(unittest.TestCase):
         self.assertAlmostEqual(result["run_diagnostics"][0]["Inflation mean"], 0.025)
         self.assertAlmostEqual(result["all_paths"][0][1], 0.0, places=6)
 
-        # Inspect the engine output directly through the public MC diagnostic
-        # contract by making the guaranteed income sufficient for spending in
-        # a second run; the pension start amount is reflected in the path's
-        # annual funding requirement rather than a reduced DC balance.
-        h.spending_target = 11_275.0
+        # The DB is £10,000 gross and is the only guaranteed income in
+        # year 0; keep the test spending below its after-tax amount. The
+        # State Pension starts in year 1 and is checked by the direct
+        # engine/path tests above.
+        h.spending_target = 9_000.0
         funded = monte_carlo_simulation(
             h,
             runs=1,

@@ -31,6 +31,9 @@ Notes
 
 from __future__ import annotations
 
+from dataclasses import fields
+from typing import Any, Dict, Optional, Type, TypeVar
+
 # `st.session_state.household_data` is read inside
 # `build_household_from_session_state` — the module must explicitly
 # import streamlit, otherwise the first call to the helper will
@@ -49,6 +52,26 @@ from models.household import Household
 from models.mortgage import Mortgage
 from models.person import Person
 from pages_helpers.strategy_options import normalize_drawdown_strategy
+
+
+_Model = TypeVar("_Model")
+
+
+def _construct_from_saved_dict(model_type: Type[_Model], payload: Any) -> _Model:
+    """Build a model from persisted data while tolerating old extra keys.
+
+    Downloaded plans can outlive the dataclass version that created them.
+    Older exports may contain UI-only or retired fields, so pass only keys
+    understood by the current model instead of making page navigation fail
+    before the user can inspect or re-save the plan.
+    """
+    if not isinstance(payload, dict):
+        raise ValueError(f"Saved plan contains an invalid {model_type.__name__} record.")
+    supported = {field.name for field in fields(model_type)}
+    return model_type(**{
+        key: value for key, value in payload.items() if key in supported
+    })
+
 
 
 def build_household_from_session_state(
@@ -108,18 +131,24 @@ def build_household_from_session_state(
             d.get("show_in_todays_value", False)
         )
 
-    p1 = Person(**d["person1"])
-    p2 = Person(**d["person2"])
+    p1 = _construct_from_saved_dict(Person, d["person1"])
+    p2 = _construct_from_saved_dict(Person, d["person2"])
 
-    assets = [Asset(**a) for a in d["assets"]]
+    assets = [
+        _construct_from_saved_dict(Asset, asset)
+        for asset in d["assets"]
+    ]
 
     mortgage = None
     if "mortgage" in d and d["mortgage"]:
-        mortgage = Mortgage(**d["mortgage"])
+        mortgage = _construct_from_saved_dict(Mortgage, d["mortgage"])
 
     events = []
     if "events" in d:
-        events = [LifeEvent(**e) for e in d["events"]]
+        events = [
+            _construct_from_saved_dict(LifeEvent, event)
+            for event in d["events"]
+        ]
 
     return Household(
         person1=p1,
